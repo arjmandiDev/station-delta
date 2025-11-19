@@ -1,0 +1,117 @@
+/**
+ * Navigation system for player movement and zone transitions.
+ * 
+ * Purpose: Handles player movement input, zone transitions, and teleportation.
+ * Responsibilities: Process input, manage movement state, handle zone changes.
+ * Inputs: Input events, zone triggers, teleport requests.
+ * Outputs: Movement commands, zone change events.
+ * Side effects: Updates player position, triggers zone loads.
+ */
+
+import * as THREE from 'three';
+import { CameraController,  type CameraInput } from '../../core/CameraController';
+import { PlayerPhysics } from '../collision/PlayerPhysics';
+
+export interface ZoneTransition {
+  zoneId: string;
+  position: THREE.Vector3;
+  rotation?: THREE.Euler;
+}
+
+export class NavigationSystem {
+  private cameraController: CameraController;
+  private playerPhysics: PlayerPhysics;
+  private input: CameraInput;
+  private onZoneTransition?: (transition: ZoneTransition) => void;
+
+  constructor(cameraController: CameraController, playerPhysics: PlayerPhysics) {
+    this.cameraController = cameraController;
+    this.playerPhysics = playerPhysics;
+    this.input = {
+      moveForward: false,
+      moveBackward: false,
+      moveLeft: false,
+      moveRight: false,
+      jump: false,
+      rotationX: 0,
+      rotationY: 0,
+    };
+  }
+
+  /**
+   * Sets zone transition callback.
+   */
+  setZoneTransitionCallback(callback: (transition: ZoneTransition) => void): void {
+    this.onZoneTransition = callback;
+  }
+
+  /**
+   * Updates navigation system.
+   */
+  update(deltaTime: number): void {
+    const newPosition = this.playerPhysics.update(deltaTime, this.cameraController, this.input);
+    this.cameraController.setPosition(newPosition);
+
+    // Reset rotation deltas
+    this.input.rotationX = 0;
+    this.input.rotationY = 0;
+    this.input.jump = false;
+  }
+
+  /**
+   * Sets movement input.
+   */
+  setMovementInput(input: Partial<CameraInput>): void {
+    Object.assign(this.input, input);
+  }
+
+  /**
+   * Gets current input state.
+   */
+  getInput(): CameraInput {
+    return { ...this.input };
+  }
+
+  /**
+   * Handles rotation input.
+   */
+  handleRotation(deltaX: number, deltaY: number, sensitivity?: number): void {
+    this.cameraController.updateRotation(deltaX, deltaY, sensitivity);
+  }
+
+  /**
+   * Teleports player to position.
+   */
+  teleport(position: THREE.Vector3, rotation?: THREE.Euler): void {
+    this.cameraController.setPosition(position);
+    if (rotation) {
+      this.cameraController.setRotation(rotation);
+    }
+    this.playerPhysics.teleport(position);
+  }
+
+  /**
+   * Triggers zone transition.
+   */
+  transitionToZone(zoneId: string, position: THREE.Vector3, rotation?: THREE.Euler): void {
+    this.teleport(position, rotation);
+    if (this.onZoneTransition) {
+      this.onZoneTransition({ zoneId, position, rotation });
+    }
+  }
+
+  /**
+   * Gets current position.
+   */
+  getPosition(): THREE.Vector3 {
+    return this.cameraController.getPosition();
+  }
+
+  /**
+   * Gets current rotation.
+   */
+  getRotation(): THREE.Euler {
+    return this.cameraController.getCamera().rotation;
+  }
+}
+
