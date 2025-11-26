@@ -1,0 +1,208 @@
+{
+    "id": "main-room",
+    "name": "Main Room",
+    "version": "1.0.0",
+    "initialPosition": [0, 30.8072, -5],
+    "initialRotation": [0, 0, 0],
+    "assets": [
+      {
+        "id": "main-room",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/main-room-baked.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true,
+        "isRoom": true
+      },
+      {
+        "id": "bunker-bed",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/bunker-bed.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "fluorescent-light",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/lamps-packed.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      {
+        "id": "electric-box",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/electrical-box.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      {
+        "id": "foldable-chair",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/foldable-chair.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "foldable-table",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/foldable-table.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "internal-communication",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/internal-communication.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      {
+        "id": "lockers",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/lockers-packed.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "blue-door",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/blue-door.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "military-radio",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/military-radio.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1]
+      },
+      {
+        "id": "office-chair",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/office-chair.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "shelf-packed",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/shelf-packed.glb" },
+          { "level": "high", "url": "/assets/zones/main-room/shelf.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "plane",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/plane.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "water-lock",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/water-lock.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": false
+      },
+      {
+        "id": "laptop-desk",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/laptop-desk.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      },
+      {
+        "id": "areas",
+        "type": "gltf",
+        "lod": [
+          { "level": "low", "url": "/assets/zones/main-room/areas.glb" }
+        ],
+        "position": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "scale": [1, 1, 1],
+        "collision": true
+      }
+    ],
+    "ambientLight": {
+      "color": [0.2, 0.2, 0.25],
+      "intensity": 8
+    },
+    "lightSources": [
+      
+    ],
+    "triggers": [
+      {
+        "id": "door-to-corridor",
+        "type": "zone_transition",
+        "position": [5, 1.6, 0],
+        "size": [2, 3, 1],
+        "targetZone": "corridor",
+        "targetPosition": [0, 1.6, 5],
+        "targetRotation": [0, 0, 0]
+      }
+    ],
+    "neighbors": [],
+    "events": {
+      "door_open": {
+        "action": "load_zone",
+        "targetZone": "corridor"
+      }
+    }
+  }

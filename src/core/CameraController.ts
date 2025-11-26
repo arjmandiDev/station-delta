@@ -10,6 +10,7 @@
 
 import * as THREE from 'three';
 import type { DeviceInfo } from '../utils/device';
+import { PLAYER_EYE_HEIGHT } from '../utils/constants';
 
 export interface CameraInput {
   moveForward: boolean;
@@ -46,16 +47,17 @@ export class CameraController {
    * Sets up camera initial state.
    */
   private setupCamera(): void {
-    this.camera.position.set(0, 1.6, 0);
-    this.camera.lookAt(0, 1.6, -1);
+    this.camera.position.set(0, PLAYER_EYE_HEIGHT, 0);
+    this.camera.lookAt(0, PLAYER_EYE_HEIGHT, -1);
+    // Initialize euler from camera's initial rotation
+    this.euler.setFromQuaternion(this.camera.quaternion);
   }
 
   /**
    * Updates camera rotation from input.
    */
   updateRotation(deltaX: number, deltaY: number, sensitivity: number = 0.002): void {
-    this.euler.setFromQuaternion(this.camera.quaternion);
-
+    // Update euler angles directly (don't extract from quaternion to avoid drift)
     this.euler.y -= deltaX * sensitivity;
     this.euler.x -= deltaY * sensitivity;
 
@@ -65,9 +67,8 @@ export class CameraController {
       Math.min(Math.PI / 2, this.euler.x)
     );
 
+    // Apply rotation to camera
     this.camera.quaternion.setFromEuler(this.euler);
-    // Mark camera matrix as needing update (will be updated in render loop)
-    this.camera.updateMatrix();
   }
 
   /**
@@ -106,8 +107,9 @@ export class CameraController {
    * Sets camera rotation.
    */
   setRotation(rotation: THREE.Euler): void {
-    this.camera.quaternion.setFromEuler(rotation);
-    this.euler.copy(rotation);
+    // Ensure same euler order
+    this.euler.set(rotation.x, rotation.y, rotation.z, 'YXZ');
+    this.camera.quaternion.setFromEuler(this.euler);
   }
 
   /**

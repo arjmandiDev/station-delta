@@ -10,10 +10,11 @@
 
 // Physics constants
 export const GRAVITY = -9.81;
-export const PLAYER_HEIGHT = 1.6;
+export const PLAYER_HEIGHT = 1.8; // Total player height (capsule height)
+export const PLAYER_EYE_HEIGHT = 1.6; // Camera/eye height from ground
 export const PLAYER_RADIUS = 0.3;
-export const PLAYER_SPEED = 3.0;
-export const PLAYER_JUMP_FORCE = 5.0;
+export const PLAYER_SPEED = 2;
+export const PLAYER_JUMP_FORCE = 2.0;
 
 // Performance budgets
 export const MAX_TRIANGLES_PER_ROOM = 60000;

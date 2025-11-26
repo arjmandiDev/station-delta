@@ -21,7 +21,12 @@ import { PerformanceMonitor } from '../systems/performance/PerformanceMonitor';
 import { DynamicResolution } from '../systems/performance/DynamicResolution';
 import { Profiler } from '../systems/profiling/Profiler';
 import { TelemetryCollector } from '../systems/profiling/TelemetryCollector';
+import { ZoneManager } from '../systems/streaming/ZoneManager';
+import { Flashlight } from '../systems/Flashlight';
+import { DebugGUI } from '../systems/DebugGUI';
 import type { DeviceInfo } from '../utils/device';
+import { PLAYER_RADIUS, PLAYER_HEIGHT, PLAYER_EYE_HEIGHT } from '../utils/constants';
+import { parseZoneManifest } from '../systems/streaming/AssetManifest';
 
 interface CanvasProps {
   deviceInfo: DeviceInfo;
@@ -40,6 +45,9 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
   const dynamicResolutionRef = useRef<DynamicResolution | null>(null);
   const profilerRef = useRef<Profiler | null>(null);
   const telemetryRef = useRef<TelemetryCollector | null>(null);
+  const zoneManagerRef = useRef<ZoneManager | null>(null);
+  const flashlightRef = useRef<Flashlight | null>(null);
+  const debugGUIRef = useRef<DebugGUI | null>(null);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -96,14 +104,111 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
     const telemetry = new TelemetryCollector();
     telemetryRef.current = telemetry;
 
+    // Add ZoneManager (pass SceneManager for lighting support)
+    const zoneManager = new ZoneManager(scene, sceneManager);
+    zoneManagerRef.current = zoneManager;
+
+    // Add Flashlight
+    const flashlight = new Flashlight(scene, camera);
+    flashlightRef.current = flashlight;
+
+    // Add Debug GUI
+    const debugGUI = new DebugGUI();
+    debugGUIRef.current = debugGUI;
+
+    // Connect light helpers to GUI
+    debugGUI.setOnConfigChange((config) => {
+      sceneManager.setLightHelpersVisible(config.showLightHelpers);
+    });
+
+    // Create player cylinder helper
+    const playerCylinderGeometry = new THREE.CylinderGeometry(
+      PLAYER_RADIUS,
+      PLAYER_RADIUS,
+      PLAYER_HEIGHT,
+      16
+    );
+    const playerCylinderMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00ff00,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.8,
+      side: THREE.DoubleSide,
+      depthTest: true,
+      depthWrite: false,
+    });
+    const playerCylinder = new THREE.Mesh(playerCylinderGeometry, playerCylinderMaterial);
+    playerCylinder.visible = false;
+    playerCylinder.renderOrder = 1000; // Render on top
+    scene.add(playerCylinder);
+
+    // Register player cylinder helper with GUI
+    debugGUI.registerPlayerCylinderHelper(playerCylinder);
+
+    // Create ray helpers group for collision visualization
+    const rayHelpersGroup = new THREE.Group();
+    rayHelpersGroup.visible = false;
+    scene.add(rayHelpersGroup);
+    debugGUI.registerRayHelpersGroup(rayHelpersGroup);
+
+    // Create OBB helpers group for OBB visualization
+    const obbHelpersGroup = new THREE.Group();
+    obbHelpersGroup.visible = false;
+    scene.add(obbHelpersGroup);
+    debugGUI.registerOBBHelpersGroup(obbHelpersGroup);
+
+    // Store OBB helpers for player and objects
+    let playerOBBHelper: THREE.LineSegments | null = null;
+    const objectOBBHelpers = new Map<THREE.Mesh, THREE.LineSegments>();
+
+    // Set up zone transition callback
+    navigation.setZoneTransitionCallback((transition) => {
+      zoneManager.setCurrentZone(transition.zoneId, 'low').then(() => {
+        // Teleport player to transition position after zone loads
+        if (transition.position) {
+          navigation.teleport(transition.position, transition.rotation);
+        }
+      }).catch((error) => {
+        console.error('Zone transition failed:', error);
+      });
+    });
+
+    // Set up zone change callback
+    zoneManager.setZoneChangeCallback((zoneId) => {
+      console.log('Zone changed to:', zoneId);
+    });
+
     // Handle resize
     const handleResize = () => {
       renderer.setSize(window.innerWidth, window.innerHeight);
       cameraController.updateAspect(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', handleResize);
+    // Load initial zone - ensure RectAreaLightUniformsLib is initialized first
+    const loadInitialZone = async () => {
+      try {
+        // Ensure RectAreaLightUniformsLib is initialized before loading lights
+        await sceneManager.ensureRectAreaLightSupport();
+        
+        const response = await fetch('/assets/zones/main-room/manifest.json');
+        const manifestData = await response.json();
+        const manifest = parseZoneManifest(manifestData);
+        zoneManager.registerZone(manifest);
+        await zoneManager.setCurrentZone('main-room', 'low');
+        if (manifest.initialPosition) {
+          const startPosition = new THREE.Vector3(...manifest.initialPosition);
+          navigation.teleport(startPosition, manifest.initialRotation 
+            ? new THREE.Euler(...manifest.initialRotation) 
+            : undefined);
+        }
+      } catch (error) {
+        console.error('Failed to load initial zone:', error);
+      }
+    };
+    loadInitialZone();
+    
 
-    // Add floor and cube - store references for cleanup
+    // Add floor and cube - store references for cleanup (temporary test objects)
     const floorGeometry = new THREE.PlaneGeometry(20, 20);
     const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
     const floor = new THREE.Mesh(floorGeometry, floorMaterial);
@@ -125,13 +230,77 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
     // Input handling
     const keys: Set<string> = new Set();
     let isPointerLocked = false;
+    let nKeyPressed = false; // Track N key state to prevent multiple toggles
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      keys.add(e.key.toLowerCase());
+      // Use e.code instead of e.key for language-independent key detection
+      // e.code returns physical key codes (KeyW, KeyA, etc.) regardless of keyboard layout
+      const keyCode = e.code;
+      
+      // Map physical key codes to game actions
+      const keyMap: Record<string, string> = {
+        'KeyW': 'w',
+        'KeyA': 'a',
+        'KeyS': 's',
+        'KeyD': 'd',
+        'ArrowUp': 'arrowup',
+        'ArrowDown': 'arrowdown',
+        'ArrowLeft': 'arrowleft',
+        'ArrowRight': 'arrowright',
+        'Space': 'space',
+        'KeyN': 'n',
+      };
+      
+      const gameKey = keyMap[keyCode];
+      const gameKeys = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'space', 'n'];
+      
+      console.log('[KeyDown] Code:', keyCode, 'Key:', e.key, 'Mapped to:', gameKey);
+      
+      if (gameKey && gameKeys.includes(gameKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        keys.add(gameKey);
+        console.log('[KeyDown] Keys Set:', Array.from(keys));
+        
+        // Handle flashlight toggle (N key)
+        if (gameKey === 'n' && !nKeyPressed) {
+          nKeyPressed = true;
+          flashlight.toggle();
+        }
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      keys.delete(e.key.toLowerCase());
+      // Use e.code instead of e.key for language-independent key detection
+      const keyCode = e.code;
+      
+      // Map physical key codes to game actions
+      const keyMap: Record<string, string> = {
+        'KeyW': 'w',
+        'KeyA': 'a',
+        'KeyS': 's',
+        'KeyD': 'd',
+        'ArrowUp': 'arrowup',
+        'ArrowDown': 'arrowdown',
+        'ArrowLeft': 'arrowleft',
+        'ArrowRight': 'arrowright',
+        'Space': 'space',
+        'KeyN': 'n',
+      };
+      
+      const gameKey = keyMap[keyCode];
+      
+      console.log('[KeyUp] Code:', keyCode, 'Key:', e.key, 'Mapped to:', gameKey);
+      
+      if (gameKey) {
+        keys.delete(gameKey);
+        console.log('[KeyUp] Keys Set:', Array.from(keys));
+        
+        // Reset N key state when released
+        if (gameKey === 'n') {
+          nKeyPressed = false;
+        }
+      }
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -151,17 +320,24 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
     };
 
     if (!deviceInfo.isMobile) {
-      window.addEventListener('keydown', handleKeyDown);
-      window.addEventListener('keyup', handleKeyUp);
+      // Add keyboard event listeners with capture mode to catch events early
+      window.addEventListener('keydown', handleKeyDown, true);
+      window.addEventListener('keyup', handleKeyUp, true);
       canvas.addEventListener('mousemove', handleMouseMove);
       canvas.addEventListener('click', handleClick);
       document.addEventListener('pointerlockchange', handlePointerLockChange);
+      
+      // Make canvas focusable to receive keyboard events
+      canvas.setAttribute('tabindex', '0');
+      canvas.style.outline = 'none';
     }
 
     // Render loop
     let lastTime = performance.now();
     let animationFrameId: number | null = null;
     let isVisible = true;
+    let lastTriggerCheck = 0;
+    const TRIGGER_CHECK_INTERVAL = 100; // Check every 100ms
 
     // Handle visibility change (tab switching, minimizing)
     const handleVisibilityChange = () => {
@@ -241,18 +417,410 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
         // Handle rotation from touch (always call to ensure smooth rotation)
         navigation.handleRotation(controlState.rotationDeltaX, controlState.rotationDeltaY, 0.002);
       } else {
-        // Desktop keyboard input
+        // Desktop keyboard input (using mapped keys)
+        const moveForward = keys.has('w') || keys.has('arrowup');
+        const moveBackward = keys.has('s') || keys.has('arrowdown');
+        const moveLeft = keys.has('a') || keys.has('arrowleft');
+        const moveRight = keys.has('d') || keys.has('arrowright');
+        const jump = keys.has('space');
+        
+        if (moveForward || moveBackward || moveLeft || moveRight || jump) {
+          console.log('[Animate] Movement input:', {
+            moveForward,
+            moveBackward,
+            moveLeft,
+            moveRight,
+            jump,
+            keysSet: Array.from(keys)
+          });
+        }
+        
         navigation.setMovementInput({
-          moveForward: keys.has('w') || keys.has('arrowup'),
-          moveBackward: keys.has('s') || keys.has('arrowdown'),
-          moveLeft: keys.has('a') || keys.has('arrowleft'),
-          moveRight: keys.has('d') || keys.has('arrowright'),
-          jump: keys.has(' '),
+          moveForward,
+          moveBackward,
+          moveLeft,
+          moveRight,
+          jump,
         });
       }
 
       // Update navigation (handles physics, movement, and collision)
       navigation.update(deltaTime);
+
+      // Update player cylinder position
+      // Camera is at eye height (1.6m from ground)
+      // Need to find the actual ground height where player is standing
+      const cameraPosition = navigation.getPosition();
+      
+      // Find ground height below player using collision system
+      const groundCheck = CollisionSystem.findGround(cameraPosition);
+      
+      if (groundCheck.hit && groundCheck.point) {
+        // groundCheck.point.y is the ground height
+        // Capsule center should be at ground + PLAYER_HEIGHT/2
+        const groundY = groundCheck.point.y;
+        const capsuleCenterY = groundY + PLAYER_HEIGHT / 2;
+        playerCylinder.position.set(cameraPosition.x, capsuleCenterY, cameraPosition.z);
+        
+        // Debug: Log cylinder position when visible
+        if (playerCylinder.visible) {
+          console.log('[Cylinder] Ground Y:', groundY, 'Cylinder Center Y:', capsuleCenterY, 'Camera Y:', cameraPosition.y);
+        }
+      } else {
+        // Fallback: if ground not found, use camera position - eye height
+        const groundY = cameraPosition.y - PLAYER_EYE_HEIGHT;
+        const capsuleCenterY = groundY + PLAYER_HEIGHT / 2;
+        playerCylinder.position.set(cameraPosition.x, capsuleCenterY, cameraPosition.z);
+        
+        if (playerCylinder.visible) {
+          console.warn('[Cylinder] Ground not found, using fallback. Ground Y:', groundY, 'Cylinder Y:', capsuleCenterY);
+        }
+      }
+
+      // Update OBB helpers for visualization
+      if (obbHelpersGroup.visible) {
+        // Update player OBB helper
+        const playerOBB = CollisionSystem.createPlayerOBB(cameraPosition);
+        if (!playerOBBHelper) {
+          playerOBBHelper = CollisionSystem.createOBBHelper(playerOBB, 0x00ff00); // Green for player
+          obbHelpersGroup.add(playerOBBHelper);
+        } else {
+          CollisionSystem.updateOBBHelper(playerOBBHelper, playerOBB);
+        }
+
+        // Update object OBB helpers
+        const objectMeshes = CollisionSystem.getObjectMeshes();
+        
+        // Remove helpers for meshes that are no longer registered
+        for (const [mesh, helper] of objectOBBHelpers.entries()) {
+          if (!objectMeshes.has(mesh)) {
+            obbHelpersGroup.remove(helper);
+            helper.geometry.dispose();
+            (helper.material as THREE.Material).dispose();
+            objectOBBHelpers.delete(mesh);
+          }
+        }
+
+        // Add/update helpers for registered object meshes
+        for (const [mesh, obb] of objectMeshes.entries()) {
+          let helper = objectOBBHelpers.get(mesh);
+          if (!helper) {
+            helper = CollisionSystem.createOBBHelper(obb, 0xff00ff); // Magenta for objects
+            obbHelpersGroup.add(helper);
+            objectOBBHelpers.set(mesh, helper);
+          } else {
+            CollisionSystem.updateOBBHelper(helper, obb);
+          }
+        }
+      } else {
+        // Clean up helpers when not visible
+        if (playerOBBHelper) {
+          obbHelpersGroup.remove(playerOBBHelper);
+          playerOBBHelper.geometry.dispose();
+          (playerOBBHelper.material as THREE.Material).dispose();
+          playerOBBHelper = null;
+        }
+        for (const [, helper] of objectOBBHelpers.entries()) {
+          obbHelpersGroup.remove(helper);
+          helper.geometry.dispose();
+          (helper.material as THREE.Material).dispose();
+        }
+        objectOBBHelpers.clear();
+      }
+
+      // Update ray helpers for collision visualization
+      if (rayHelpersGroup.visible) {
+        // Clear existing ray helpers - dispose ALL children (Line and Mesh)
+        while (rayHelpersGroup.children.length > 0) {
+          const child = rayHelpersGroup.children[0];
+          if (child instanceof THREE.Line || child instanceof THREE.Mesh) {
+            const geometry = child.geometry as THREE.BufferGeometry;
+            const material = child.material as THREE.Material;
+            geometry.dispose();
+            if (material && typeof material.dispose === 'function') {
+              material.dispose();
+            }
+          }
+          rayHelpersGroup.remove(child);
+        }
+
+        // Create rays for capsule collision check
+        // 32 fixed rays: 8 directions × 4 vertical rows (from surface to eye height)
+        const groundRayHeight = PLAYER_RADIUS; // Near base for ground
+
+        // 8 fixed horizontal directions (cardinal + diagonal: N, NE, E, SE, S, SW, W, NW)
+        const sqrt2 = Math.sqrt(2);
+        const directions = [
+          { dir: new THREE.Vector3(0, 0, 1), color: 0x0000ff },                    // North (Forward) - Blue
+          { dir: new THREE.Vector3(1 / sqrt2, 0, 1 / sqrt2), color: 0x0080ff },   // Northeast - Light Blue
+          { dir: new THREE.Vector3(1, 0, 0), color: 0xff0000 },                    // East (Right) - Red
+          { dir: new THREE.Vector3(1 / sqrt2, 0, -1 / sqrt2), color: 0xff8000 },  // Southeast - Orange
+          { dir: new THREE.Vector3(0, 0, -1), color: 0x00ffff },                   // South (Backward) - Cyan
+          { dir: new THREE.Vector3(-1 / sqrt2, 0, -1 / sqrt2), color: 0x00ff80 }, // Southwest - Light Green
+          { dir: new THREE.Vector3(-1, 0, 0), color: 0xff00ff },                   // West (Left) - Magenta
+          { dir: new THREE.Vector3(-1 / sqrt2, 0, 1 / sqrt2), color: 0x8000ff }, // Northwest - Purple
+        ];
+
+        // 4 vertical rows from surface to eye height
+        const numRows = 4;
+        const baseHeight = PLAYER_RADIUS; // Start from surface
+        const topHeight = PLAYER_EYE_HEIGHT; // End at eye height
+        const verticalRange = topHeight - baseHeight;
+        
+        // Generate 4 vertical positions
+        const verticalPositions: number[] = [];
+        for (let i = 0; i < numRows; i++) {
+          const ratio = i / (numRows - 1); // 0 to 1
+          const height = baseHeight + verticalRange * ratio;
+          verticalPositions.push(height);
+        }
+
+        // Draw all 32 rays (8 directions × 4 rows)
+        verticalPositions.forEach((verticalHeight, rowIndex) => {
+          const rayStart = cameraPosition.clone();
+          rayStart.y = cameraPosition.y - (PLAYER_EYE_HEIGHT - verticalHeight);
+          
+          // Different opacity for different rows (lower rows more transparent)
+          const opacity = 0.3 + (rowIndex / (numRows - 1)) * 0.7; // 0.3 to 1.0
+          const lineWidth = 1 + (rowIndex / (numRows - 1)) * 2; // 1 to 3
+
+          directions.forEach(({ dir, color }) => {
+            const raycaster = new THREE.Raycaster();
+            raycaster.set(rayStart, dir);
+            const intersections = CollisionSystem.raycast(raycaster);
+            const hit = intersections[0];
+
+            const rayLength = hit ? Math.min(hit.distance, 2.0) : 2.0;
+            const endPoint = rayStart.clone().add(dir.clone().multiplyScalar(rayLength));
+
+            const points = [rayStart.clone(), endPoint];
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const material = new THREE.LineBasicMaterial({
+              color: hit && hit.distance < PLAYER_RADIUS ? 0xffff00 : color,
+              linewidth: lineWidth,
+              transparent: true,
+              opacity: opacity,
+            });
+            const line = new THREE.Line(geometry, material);
+            rayHelpersGroup.add(line);
+
+            if (hit && hit.distance < PLAYER_RADIUS) {
+              const sphereGeometry = new THREE.SphereGeometry(0.08, 8, 8);
+              const sphereMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xffff00,
+                transparent: true,
+                opacity: 0.8,
+              });
+              const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+              sphere.position.copy(hit.point);
+              rayHelpersGroup.add(sphere);
+            }
+          });
+        });
+        
+        // Draw ground ray separately from base height
+        {
+          const groundRayStart = cameraPosition.clone();
+          groundRayStart.y = cameraPosition.y - (PLAYER_EYE_HEIGHT - groundRayHeight);
+          const dir = new THREE.Vector3(0, -1, 0); // Down
+          const color = 0x00ff00; // Green
+          const opacity = 1.0;
+          
+          const raycaster = new THREE.Raycaster();
+          raycaster.set(groundRayStart, dir);
+          const intersections = CollisionSystem.raycast(raycaster);
+          const hit = intersections[0];
+
+          const rayLength = hit ? Math.min(hit.distance, 2.0) : 2.0;
+          const endPoint = groundRayStart.clone().add(dir.clone().multiplyScalar(rayLength));
+
+          const points = [groundRayStart.clone(), endPoint];
+          const geometry = new THREE.BufferGeometry().setFromPoints(points);
+          const material = new THREE.LineBasicMaterial({
+            color: hit && hit.distance < PLAYER_RADIUS ? 0xffff00 : color,
+            linewidth: 4,
+            transparent: true,
+            opacity: opacity,
+          });
+          const line = new THREE.Line(geometry, material);
+          rayHelpersGroup.add(line);
+
+          if (hit && hit.distance < PLAYER_RADIUS) {
+            const sphereGeometry = new THREE.SphereGeometry(0.08, 8, 8);
+            const sphereMaterial = new THREE.MeshBasicMaterial({ 
+              color: 0xffff00,
+              transparent: true,
+              opacity: 0.8,
+            });
+            const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+            sphere.position.copy(hit.point);
+            rayHelpersGroup.add(sphere);
+          }
+        }
+
+        // Ground check ray (only one, separate)
+        const groundRaycaster = new THREE.Raycaster();
+        groundRaycaster.set(cameraPosition, new THREE.Vector3(0, -1, 0));
+        const groundIntersections = CollisionSystem.raycast(groundRaycaster);
+        
+        // Find the first hit that is thin enough to be considered ground (10% of player height or less)
+        const MAX_GROUND_THICKNESS = PLAYER_HEIGHT * 0.1; // 10% of player height
+        let groundHit: THREE.Intersection | null = null;
+        let actualGroundPoint: THREE.Vector3 | null = null;
+        let rayColor = 0x00ff00; // Green for ground
+        
+        for (const hit of groundIntersections) {
+          // Calculate the height/thickness of the hit object
+          let objectHeight = 0;
+          if (hit.object instanceof THREE.Mesh && hit.object.geometry) {
+            hit.object.geometry.computeBoundingBox();
+            const box = hit.object.geometry.boundingBox;
+            if (box) {
+              const size = new THREE.Vector3();
+              box.getSize(size);
+              // Get world scale to account for object scaling
+              const worldScale = new THREE.Vector3();
+              hit.object.getWorldScale(worldScale);
+              // Use Y dimension (height) of the bounding box
+              objectHeight = size.y * Math.abs(worldScale.y);
+            }
+          }
+          
+          // If object is thin enough (like a floor), use it as ground
+          if (objectHeight <= MAX_GROUND_THICKNESS) {
+            groundHit = hit;
+            actualGroundPoint = hit.point.clone();
+            rayColor = 0x00ff00; // Green for ground
+            break;
+          } else {
+            // Object is too thick (table, chair, etc.) - continue raycast from bottom of object
+            // Calculate bottom of the object
+            if (hit.object instanceof THREE.Mesh && hit.object.geometry) {
+              hit.object.geometry.computeBoundingBox();
+              const box = hit.object.geometry.boundingBox;
+              if (box) {
+                const worldMatrix = new THREE.Matrix4();
+                hit.object.updateMatrixWorld();
+                worldMatrix.copy(hit.object.matrixWorld);
+                
+                // Get bottom Y in world space
+                const localBottom = new THREE.Vector3(0, box.min.y, 0);
+                const worldBottom = localBottom.applyMatrix4(worldMatrix);
+                
+                // Continue raycast from bottom of this object
+                const continueRaycaster = new THREE.Raycaster();
+                continueRaycaster.set(worldBottom, new THREE.Vector3(0, -1, 0));
+                const continueIntersections = CollisionSystem.raycast(continueRaycaster);
+                
+                // Find ground below this object
+                for (const continueHit of continueIntersections) {
+                  if (continueHit.object !== hit.object) {
+                    // Check if this is also a thin object
+                    let continueObjectHeight = 0;
+                    if (continueHit.object instanceof THREE.Mesh && continueHit.object.geometry) {
+                      continueHit.object.geometry.computeBoundingBox();
+                      const continueBox = continueHit.object.geometry.boundingBox;
+                      if (continueBox) {
+                        const continueSize = new THREE.Vector3();
+                        continueBox.getSize(continueSize);
+                        const continueWorldScale = new THREE.Vector3();
+                        continueHit.object.getWorldScale(continueWorldScale);
+                        continueObjectHeight = continueSize.y * Math.abs(continueWorldScale.y);
+                      }
+                    }
+                    
+                    if (continueObjectHeight <= MAX_GROUND_THICKNESS) {
+                      groundHit = continueHit;
+                      actualGroundPoint = continueHit.point.clone();
+                      rayColor = 0x00ff00; // Green for ground
+                      break;
+                    }
+                  }
+                }
+                
+                if (groundHit) break;
+              }
+            }
+            
+            // If we hit a thick object but couldn't find ground below, show it in orange
+            if (!groundHit) {
+              groundHit = hit;
+              actualGroundPoint = hit.point.clone();
+              rayColor = 0xff8800; // Orange for thick objects
+            }
+          }
+        }
+
+        if (groundHit && actualGroundPoint) {
+          const groundEndPoint = cameraPosition.clone().add(new THREE.Vector3(0, -groundHit.distance, 0));
+          const groundPoints = [cameraPosition.clone(), groundEndPoint];
+          const groundGeometry = new THREE.BufferGeometry().setFromPoints(groundPoints);
+          const groundMaterial = new THREE.LineBasicMaterial({
+            color: rayColor,
+            linewidth: 4,
+            transparent: true,
+            opacity: 1.0,
+          });
+          const groundLine = new THREE.Line(groundGeometry, groundMaterial);
+          rayHelpersGroup.add(groundLine);
+
+          // Add sphere at ground hit point
+          const groundSphereGeometry = new THREE.SphereGeometry(0.12, 8, 8);
+          const groundSphereMaterial = new THREE.MeshBasicMaterial({ 
+            color: rayColor,
+            transparent: true,
+            opacity: 0.9,
+          });
+          const groundSphere = new THREE.Mesh(groundSphereGeometry, groundSphereMaterial);
+          groundSphere.position.copy(actualGroundPoint);
+          rayHelpersGroup.add(groundSphere);
+        }
+      }
+
+      // Update flashlight position
+      flashlight.update();
+
+      // Check for zone triggers (e.g., door opening, teleportation) - throttled
+      if (currentTime - lastTriggerCheck >= TRIGGER_CHECK_INTERVAL) {
+        lastTriggerCheck = currentTime;
+        const currentZoneId = zoneManager.getCurrentZoneId();
+        if (currentZoneId) {
+          const playerPosition = navigation.getPosition();
+          const trigger = zoneManager.checkTriggers(playerPosition, currentZoneId);
+
+          if (trigger) {
+            // Handle trigger based on type
+            switch (trigger.type) {
+              case 'teleport':
+                if (trigger.targetPosition && trigger.targetZone) {
+                  navigation.transitionToZone(
+                    trigger.targetZone,
+                    new THREE.Vector3(...trigger.targetPosition),
+                    trigger.targetRotation ? new THREE.Euler(...trigger.targetRotation) : undefined
+                  );
+                }
+                break;
+              case 'zone_transition':
+                if (trigger.targetZone && trigger.targetPosition) {
+                  navigation.transitionToZone(
+                    trigger.targetZone,
+                    new THREE.Vector3(...trigger.targetPosition),
+                    trigger.targetRotation ? new THREE.Euler(...trigger.targetRotation) : undefined
+                  );
+                }
+                break;
+              case 'door':
+                // Trigger door opening event
+                if (trigger.event) {
+                  zoneManager.handleEvent(trigger.event, currentZoneId).catch((error) => {
+                    console.error('Event handling failed:', error);
+                  });
+                }
+                break;
+            }
+          }
+        }
+      }
 
       // Update scene
       sceneManager.update(deltaTime);
@@ -288,8 +856,8 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
 
       window.removeEventListener('resize', handleResize);
       if (!deviceInfo.isMobile) {
-        window.removeEventListener('keydown', handleKeyDown);
-        window.removeEventListener('keyup', handleKeyUp);
+        window.removeEventListener('keydown', handleKeyDown, true);
+        window.removeEventListener('keyup', handleKeyUp, true);
         canvas.removeEventListener('mousemove', handleMouseMove);
         canvas.removeEventListener('click', handleClick);
         document.removeEventListener('pointerlockchange', handlePointerLockChange);
@@ -300,6 +868,20 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
         CollisionSystem.unregisterMesh(mesh);
       }
       CollisionSystem.clear();
+
+      // Cleanup OBB helpers
+      if (playerOBBHelper) {
+        obbHelpersGroup.remove(playerOBBHelper);
+        playerOBBHelper.geometry.dispose();
+        (playerOBBHelper.material as THREE.Material).dispose();
+        playerOBBHelper = null;
+      }
+      for (const [, helper] of objectOBBHelpers.entries()) {
+        obbHelpersGroup.remove(helper);
+        helper.geometry.dispose();
+        (helper.material as THREE.Material).dispose();
+      }
+      objectOBBHelpers.clear();
       
       // Dispose mobile controls
       if (mobileControlsRef.current) {
@@ -323,6 +905,24 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
         telemetryRef.current = null;
       }
       
+      // Dispose zone manager
+      if (zoneManagerRef.current) {
+        zoneManagerRef.current.dispose();
+        zoneManagerRef.current = null;
+      }
+      
+      // Dispose flashlight
+      if (flashlightRef.current) {
+        flashlightRef.current.dispose();
+        flashlightRef.current = null;
+      }
+      
+      // Dispose debug GUI
+      if (debugGUIRef.current) {
+        debugGUIRef.current.dispose();
+        debugGUIRef.current = null;
+      }
+      
       if (rendererRef.current) {
         rendererRef.current.dispose();
       }
@@ -337,6 +937,7 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       dynamicResolutionRef.current = null;
       profilerRef.current = null;
       telemetryRef.current = null;
+      zoneManagerRef.current = null;
     };
   }, [deviceInfo, onReady]);
 

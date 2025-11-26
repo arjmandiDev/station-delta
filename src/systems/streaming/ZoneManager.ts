@@ -9,9 +9,10 @@
  */
 
 import * as THREE from 'three';
-import { type ZoneManifest, type ZoneTrigger, parseZoneManifest } from './AssetManifest';
+import { type ZoneManifest, type ZoneTrigger } from './AssetManifest';
 import { StreamingLoader } from './StreamingLoader';
 import { CollisionSystem } from '../collision/CollisionSystem';
+
 
 export interface Zone {
   id: string;
@@ -28,9 +29,11 @@ export class ZoneManager {
   private loader: StreamingLoader;
   private scene: THREE.Scene;
   private onZoneChange?: (zoneId: string) => void;
+  private sceneManager?: any; // Reference to SceneManager for lighting
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, sceneManager?: any) {
     this.scene = scene;
+    this.sceneManager = sceneManager;
     this.loader = new StreamingLoader();
   }
 
@@ -54,6 +57,11 @@ export class ZoneManager {
       lodLevel: 'low',
     };
     this.zones.set(manifest.id, zone);
+    
+    // Setup zone lighting in SceneManager
+    if (this.sceneManager) {
+      this.sceneManager.setupZoneLighting(manifest);
+    }
   }
 
   /**
@@ -141,9 +149,9 @@ export class ZoneManager {
           this.scene.add(object);
           zone.objects.push(object);
 
-          // Register for collision if it's geometry
-          if (object instanceof THREE.Mesh && object.geometry) {
-            CollisionSystem.registerMesh(object);
+          // Register for collision based on asset type
+          if (asset.collision === true) {
+            this.registerObjectForCollision(object, asset);
           }
         }
       } catch (error) {
@@ -154,6 +162,44 @@ export class ZoneManager {
     }
   }
 
+
+  /**
+   * Registers an object and all its nested meshes for collision detection.
+   * Uses ray casting for room geometry, OBB for objects.
+   */
+  private registerObjectForCollision(object: THREE.Object3D, asset: any): void {
+    const isRoom = asset.isRoom === true;
+
+    object.traverse((child) => {
+      if (child instanceof THREE.Mesh && child.geometry) {
+        if (isRoom) {
+          // Room geometry: use ray casting
+          CollisionSystem.registerMesh(child);
+        } else {
+          // Objects: use OBB
+          CollisionSystem.registerObjectMesh(child);
+        }
+      }
+    });
+  }
+
+  /**
+   * Unregisters an object and all its nested meshes from collision detection.
+   */
+  private unregisterObjectForCollision(object: THREE.Object3D, asset?: any): void {
+    const isRoom = asset?.isRoom === true;
+
+    object.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        if (isRoom) {
+          CollisionSystem.unregisterMesh(child);
+        } else {
+          CollisionSystem.unregisterObjectMesh(child);
+        }
+      }
+    });
+  }
+
   /**
    * Upgrades zone LOD level.
    */
@@ -162,10 +208,99 @@ export class ZoneManager {
     newLodLevel: 'low' | 'medium' | 'high',
     onProgress?: (progress: number) => void
   ): Promise<void> {
-    // For now, just reload at higher LOD
-    // In production, you'd want to swap meshes more efficiently
-    this.unloadZone(zone.id);
-    await this.loadZoneLOD(zone, newLodLevel, onProgress);
+    // Upgrade individual assets that have higher LOD available
+    const assetsToUpgrade: { asset: any; objectIndex: number }[] = [];
+    
+    // Find assets that have the requested LOD level
+    for (let i = 0; i < zone.manifest.assets.length; i++) {
+      const asset = zone.manifest.assets[i];
+      const hasRequestedLOD = asset.lod.some(l => l.level === newLodLevel);
+      if (hasRequestedLOD && i < zone.objects.length) {
+        assetsToUpgrade.push({ asset, objectIndex: i });
+      }
+    }
+
+    if (assetsToUpgrade.length === 0) {
+      console.log(`No assets have ${newLodLevel} LOD level, skipping upgrade`);
+      return;
+    }
+
+    const total = assetsToUpgrade.length;
+    let upgraded = 0;
+
+    for (const { asset, objectIndex } of assetsToUpgrade) {
+      try {
+        // Check if asset has the requested LOD level
+        const requestedLOD = asset.lod.find((l: any) => l.level === newLodLevel);
+        if (!requestedLOD) {
+          continue; // Skip if this asset doesn't have the requested LOD
+        }
+
+        // Get the current object
+        const currentObject = zone.objects[objectIndex];
+        if (!currentObject) {
+          continue;
+        }
+
+        // Load the new LOD version
+        const newObject = await this.loader.loadAsset(
+          asset,
+          newLodLevel,
+          (progress) => {
+            if (onProgress) {
+              const totalProgress = (upgraded + progress.loaded / progress.total) / total;
+              onProgress(totalProgress * 100);
+            }
+          }
+        );
+
+        if (newObject && newObject instanceof THREE.Object3D) {
+          // Apply transforms
+          if (asset.position) {
+            newObject.position.set(asset.position[0], asset.position[1], asset.position[2]);
+          }
+          if (asset.rotation) {
+            newObject.rotation.set(asset.rotation[0], asset.rotation[1], asset.rotation[2]);
+          }
+          if (asset.scale) {
+            newObject.scale.set(asset.scale[0], asset.scale[1], asset.scale[2]);
+          }
+
+          // Unregister collision for old object
+          if (asset.collision === true) {
+            this.unregisterObjectForCollision(currentObject, asset);
+          }
+
+          // Dispose old object
+          currentObject.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+              child.geometry?.dispose();
+              if (Array.isArray(child.material)) {
+                child.material.forEach((mat) => mat.dispose());
+              } else {
+                child.material?.dispose();
+              }
+            }
+          });
+          this.scene.remove(currentObject);
+
+          // Add new object
+          this.scene.add(newObject);
+          zone.objects[objectIndex] = newObject;
+
+          // Register collision for new object
+          if (asset.collision === true) {
+            this.registerObjectForCollision(newObject, asset);
+          }
+
+          console.log(`✅ Upgraded asset "${asset.id}" to ${newLodLevel} LOD`);
+        }
+      } catch (error) {
+        console.error(`Failed to upgrade asset ${asset.id} to ${newLodLevel} LOD:`, error);
+      }
+
+      upgraded++;
+    }
   }
 
   /**
@@ -175,23 +310,30 @@ export class ZoneManager {
     const zone = this.zones.get(zoneId);
     if (!zone) return;
 
-    for (const object of zone.objects) {
-      // Unregister collision
-      if (object instanceof THREE.Mesh) {
-        CollisionSystem.unregisterMesh(object);
-      }
+    for (let i = 0; i < zone.objects.length; i++) {
+      const object = zone.objects[i];
+      const asset = zone.manifest.assets[i];
+      // Unregister collision (handles nested meshes)
+      this.unregisterObjectForCollision(object, asset);
 
       // Dispose resources
-      if (object instanceof THREE.Mesh) {
-        object.geometry?.dispose();
-        if (Array.isArray(object.material)) {
-          object.material.forEach((mat) => mat.dispose());
-        } else {
-          object.material?.dispose();
+      object.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry?.dispose();
+          if (Array.isArray(child.material)) {
+            child.material.forEach((mat) => mat.dispose());
+          } else {
+            child.material?.dispose();
+          }
         }
-      }
+      });
 
       this.scene.remove(object);
+    }
+
+    // Cleanup zone lighting in SceneManager
+    if (this.sceneManager) {
+      this.sceneManager.cleanupZoneLighting(zoneId);
     }
 
     zone.objects = [];
@@ -212,11 +354,16 @@ export class ZoneManager {
 
     this.currentZoneId = zoneId;
 
+    // Setup zone lighting before loading
+    const zone = this.zones.get(zoneId);
+    if (zone && this.sceneManager) {
+      this.sceneManager.setupZoneLighting(zone.manifest);
+    }
+
     // Load new zone (low LOD first for instant display)
     await this.loadZone(zoneId, 'low');
 
     // Preload neighbors
-    const zone = this.zones.get(zoneId);
     if (zone) {
       for (const neighborId of zone.manifest.neighbors) {
         this.loadZone(neighborId, 'low').catch((error) => {

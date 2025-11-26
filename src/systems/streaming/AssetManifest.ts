@@ -22,6 +22,26 @@ export interface ZoneAsset {
   position?: [number, number, number];
   rotation?: [number, number, number];
   scale?: [number, number, number];
+  collision?: boolean; // If true, register this asset's meshes for collision detection
+  isRoom?: boolean; // If true, this asset is room geometry (uses ray casting), otherwise uses OBB for objects
+}
+
+export interface ZoneLightSource {
+  id: string;
+  type: 'point' | 'spot' | 'directional';
+  position: [number, number, number];
+  color?: [number, number, number] | number | string; // RGB array (0-1), hex number, or hex string
+  intensity?: number;
+  distance?: number; // For point/spot lights
+  angle?: number; // For spot lights (in radians)
+  penumbra?: number; // For spot lights (0-1)
+  decay?: number; // For point/spot lights
+  target?: [number, number, number]; // For spot/directional lights
+}
+
+export interface ZoneAmbientLight {
+  color?: [number, number, number] | number | string; // RGB array (0-1), hex number, or hex string
+  intensity?: number;
 }
 
 export interface ZoneTrigger {
@@ -42,6 +62,8 @@ export interface ZoneManifest {
   initialPosition: [number, number, number];
   initialRotation?: [number, number, number];
   assets: ZoneAsset[];
+  ambientLight?: ZoneAmbientLight; // Ambient light for the zone
+  lightSources?: ZoneLightSource[]; // Light sources with position and type
   triggers: ZoneTrigger[];
   neighbors: string[]; // Zone IDs that should be preloaded
   events?: {
