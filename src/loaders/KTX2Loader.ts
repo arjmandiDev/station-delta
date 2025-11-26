@@ -42,6 +42,7 @@ export class KTX2Loader {
       console.warn('KTX2Loader not available, falling back to BasisTextureLoader');
       try {
         const { BasisTextureLoader } = await import('three/examples/jsm/loaders/BasisTextureLoader.js');
+        console.log(BasisTextureLoader);
         this.loader = new BasisTextureLoader();
         (this.loader as any).setTranscoderPath(this.transcoderPath);
         this.transcoderLoaded = true;

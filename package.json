@@ -18,6 +18,7 @@
   "dependencies": {
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
+    "fflate": "^0.8.2",
     "gltfpack": "^0.25.0",
     "lil-gui": "^0.20.0",
     "react": "^19.2.0",

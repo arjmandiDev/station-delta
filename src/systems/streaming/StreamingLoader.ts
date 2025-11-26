@@ -9,8 +9,7 @@
  */
 
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import type { ZoneAsset, LODLevel } from './AssetManifest';
+import type { ZoneAsset } from './AssetManifest';
 
 export interface LoadProgress {
   loaded: number;
@@ -20,8 +19,113 @@ export interface LoadProgress {
 
 export type LoadCallback = (progress: LoadProgress) => void;
 
+// Module-level singletons shared across all StreamingLoader instances
+let sharedKTX2Loader: any = null;
+let sharedKTX2LoaderPromise: Promise<any> | null = null;
+let sharedMeshoptDecoder: any = null;
+let sharedMeshoptDecoderPromise: Promise<any> | null = null;
+
 export class StreamingLoader {
   private activeLoads: Map<string, AbortController> = new Map();
+  private gltfLoader: any = null;
+  private gltfLoaderInitialized: boolean = false;
+
+  /**
+   * Initializes KTX2Loader (module-level singleton, shared across all instances).
+   */
+  private async initKTX2Loader(): Promise<any> {
+    if (sharedKTX2Loader) {
+      return sharedKTX2Loader;
+    }
+
+    if (sharedKTX2LoaderPromise) {
+      return sharedKTX2LoaderPromise;
+    }
+
+    sharedKTX2LoaderPromise = (async () => {
+      try {
+        const { KTX2Loader } = await import('three/examples/jsm/loaders/KTX2Loader.js');
+        const ktx2Loader = new KTX2Loader();
+        await ktx2Loader.setTranscoderPath('/basis/');
+        
+        // Create a temporary renderer to detect support
+        const testRenderer = new THREE.WebGLRenderer();
+        await ktx2Loader.detectSupport(testRenderer);
+        testRenderer.dispose();
+        
+        sharedKTX2Loader = ktx2Loader;
+        return ktx2Loader;
+      } catch (error) {
+        console.warn('KTX2Loader setup failed, continuing without KTX2 support:', error);
+        sharedKTX2LoaderPromise = null;
+        return null;
+      }
+    })();
+
+    return sharedKTX2LoaderPromise;
+  }
+
+  /**
+   * Initializes MeshoptDecoder (module-level singleton, shared across all instances).
+   */
+  private async initMeshoptDecoder(): Promise<any> {
+    if (sharedMeshoptDecoder) {
+      return sharedMeshoptDecoder;
+    }
+
+    if (sharedMeshoptDecoderPromise) {
+      return sharedMeshoptDecoderPromise;
+    }
+
+    sharedMeshoptDecoderPromise = (async () => {
+      try {
+        const { MeshoptDecoder } = await import('three/examples/jsm/libs/meshopt_decoder.module.js');
+        await MeshoptDecoder.ready;
+        sharedMeshoptDecoder = MeshoptDecoder;
+        return MeshoptDecoder;
+      } catch (error) {
+        console.warn('MeshoptDecoder setup failed, continuing without Meshopt support:', error);
+        sharedMeshoptDecoderPromise = null;
+        return null;
+      }
+    })();
+
+    return sharedMeshoptDecoderPromise;
+  }
+
+  /**
+   * Initializes GLTFLoader with decoders (singleton).
+   */
+  private async initGLTFLoader(): Promise<any> {
+    if (this.gltfLoader && this.gltfLoaderInitialized) {
+      return this.gltfLoader;
+    }
+
+    // Import GLTFLoader
+    if (!this.gltfLoader) {
+      const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+      this.gltfLoader = new GLTFLoader();
+    }
+
+    // Set up decoders if not already initialized
+    if (!this.gltfLoaderInitialized) {
+      // Set up MeshoptDecoder (reused instance)
+      const meshoptDecoder = await this.initMeshoptDecoder();
+      if (meshoptDecoder) {
+        this.gltfLoader.setMeshoptDecoder(meshoptDecoder);
+      }
+      
+      // Set up KTX2Loader (reused instance)
+      const ktx2Loader = await this.initKTX2Loader();
+      if (ktx2Loader) {
+        this.gltfLoader.setKTX2Loader(ktx2Loader);
+      }
+      
+      this.gltfLoaderInitialized = true;
+    }
+
+    return this.gltfLoader;
+  }
 
   /**
    * Loads a GLTF model.
@@ -37,7 +141,9 @@ export class StreamingLoader {
     }
 
     try {
-      const loader = new GLTFLoader();
+      // Use singleton GLTFLoader instance
+      const loader = await this.initGLTFLoader();
+      
       const gltf = await new Promise<THREE.Group>((resolve, reject) => {
         loader.load(
           url,
@@ -141,6 +247,30 @@ export class StreamingLoader {
       controller.abort();
     }
     this.activeLoads.clear();
+  }
+
+  /**
+   * Disposes of loader resources.
+   * Note: Shared KTX2Loader and MeshoptDecoder are not disposed here
+   * as they may be used by other StreamingLoader instances.
+   */
+  dispose(): void {
+    this.gltfLoader = null;
+    this.gltfLoaderInitialized = false;
+    this.cancelAll();
+  }
+
+  /**
+   * Disposes of shared resources (call when all StreamingLoader instances are done).
+   */
+  static disposeShared(): void {
+    if (sharedKTX2Loader && typeof sharedKTX2Loader.dispose === 'function') {
+      sharedKTX2Loader.dispose();
+      sharedKTX2Loader = null;
+      sharedKTX2LoaderPromise = null;
+    }
+    sharedMeshoptDecoder = null;
+    sharedMeshoptDecoderPromise = null;
   }
 }
 
