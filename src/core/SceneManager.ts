@@ -43,7 +43,6 @@ export class SceneManager {
       const { RectAreaLightUniformsLib } = await import('three/examples/jsm/lights/RectAreaLightUniformsLib.js');
       RectAreaLightUniformsLib.init();
       this.rectAreaLightUniformsInitialized = true;
-      console.log('RectAreaLightUniformsLib initialized');
     } catch (error) {
       console.warn('Failed to initialize RectAreaLightUniformsLib:', error);
     }

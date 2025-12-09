@@ -81,6 +81,26 @@ export class ZoneManager {
       return; // Already loaded at this level
     }
 
+    // Downgrade path: if the zone is already loaded at a higher LOD and we
+    // request "low", fully unload and reload the zone at low quality, including
+    // restoring its lighting setup.
+    if (zone.loaded && zone.lodLevel !== lodLevel && lodLevel === 'low') {
+      this.unloadZone(zoneId);
+      const reloadedZone = this.zones.get(zoneId);
+      if (!reloadedZone) {
+        return;
+      }
+
+      // Recreate zone lighting after unload so the scene does not go dark.
+      if (this.sceneManager) {
+        this.sceneManager.setupZoneLighting(reloadedZone.manifest);
+      }
+
+      // After unload, the zone is marked as not loaded; recurse once to load low LOD.
+      await this.loadZone(zoneId, 'low', onProgress);
+      return;
+    }
+
     if (zone.loading) {
       // Wait for current load to finish
       while (zone.loading) {
@@ -221,7 +241,6 @@ export class ZoneManager {
     }
 
     if (assetsToUpgrade.length === 0) {
-      console.log(`No assets have ${newLodLevel} LOD level, skipping upgrade`);
       return;
     }
 
@@ -292,8 +311,6 @@ export class ZoneManager {
           if (asset.collision === true) {
             this.registerObjectForCollision(newObject, asset);
           }
-
-          console.log(`✅ Upgraded asset "${asset.id}" to ${newLodLevel} LOD`);
         }
       } catch (error) {
         console.error(`Failed to upgrade asset ${asset.id} to ${newLodLevel} LOD:`, error);
@@ -344,7 +361,11 @@ export class ZoneManager {
   /**
    * Sets current zone and loads it.
    */
-  async setCurrentZone(zoneId: string, lodLevel: 'low' | 'medium' | 'high' = 'low'): Promise<void> {
+  async setCurrentZone(
+    zoneId: string,
+    lodLevel: 'low' | 'medium' | 'high' = 'low',
+    onProgress?: (progress: number, message: string) => void
+  ): Promise<void> {
     if (this.currentZoneId === zoneId) return;
 
     // Unload previous zone
@@ -361,7 +382,14 @@ export class ZoneManager {
     }
 
     // Load new zone (low LOD first for instant display)
-    await this.loadZone(zoneId, 'low');
+    if (onProgress) {
+      onProgress(0, 'Loading assets...');
+    }
+    await this.loadZone(zoneId, 'low', (progress) => {
+      if (onProgress) {
+        onProgress(progress, 'Loading assets...');
+      }
+    });
 
     // Preload neighbors
     if (zone) {
@@ -374,9 +402,22 @@ export class ZoneManager {
 
     // Upgrade to requested LOD
     if (lodLevel !== 'low') {
-      this.loadZone(zoneId, lodLevel).catch((error) => {
+      if (onProgress) {
+        onProgress(80, 'Upgrading quality...');
+      }
+      await this.loadZone(zoneId, lodLevel, (progress) => {
+        if (onProgress) {
+          // Map upgrade progress (0-100) to overall progress (80-100)
+          const overallProgress = 80 + (progress * 0.2);
+          onProgress(overallProgress, 'Upgrading quality...');
+        }
+      }).catch((error) => {
         console.warn(`Failed to upgrade zone ${zoneId} to ${lodLevel}:`, error);
       });
+    }
+    
+    if (onProgress) {
+      onProgress(100, 'Ready!');
     }
 
     if (this.onZoneChange) {

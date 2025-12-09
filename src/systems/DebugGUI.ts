@@ -113,10 +113,6 @@ export class DebugGUI {
   private updatePlayerCylinderVisibility(visible: boolean): void {
     if (this.playerCylinderHelper) {
       this.playerCylinderHelper.visible = visible;
-      console.log('[DebugGUI] Player cylinder visibility changed to:', visible);
-      if (visible && this.playerCylinderHelper.position) {
-        console.log('[DebugGUI] Cylinder position:', this.playerCylinderHelper.position);
-      }
     } else {
       console.warn('[DebugGUI] Player cylinder helper not registered!');
     }
@@ -128,7 +124,6 @@ export class DebugGUI {
   registerPlayerCylinderHelper(helper: THREE.Object3D): void {
     this.playerCylinderHelper = helper;
     helper.visible = this.config.showPlayerCylinder;
-    console.log('[DebugGUI] Registered player cylinder helper, initial visibility:', this.config.showPlayerCylinder);
   }
 
   /**
@@ -137,7 +132,6 @@ export class DebugGUI {
   registerRayHelpersGroup(group: THREE.Group): void {
     this.rayHelpersGroup = group;
     group.visible = this.config.showRayHelpers;
-    console.log('[DebugGUI] Registered ray helpers group, initial visibility:', this.config.showRayHelpers);
   }
 
   /**
@@ -146,7 +140,6 @@ export class DebugGUI {
   private updateRayHelpersVisibility(visible: boolean): void {
     if (this.rayHelpersGroup) {
       this.rayHelpersGroup.visible = visible;
-      console.log('[DebugGUI] Ray helpers visibility changed to:', visible);
     } else {
       console.warn('[DebugGUI] Ray helpers group not registered!');
     }
@@ -158,7 +151,6 @@ export class DebugGUI {
   registerOBBHelpersGroup(group: THREE.Group): void {
     this.obbHelpersGroup = group;
     group.visible = this.config.showOBBHelpers;
-    console.log('[DebugGUI] Registered OBB helpers group, initial visibility:', this.config.showOBBHelpers);
   }
 
   /**
@@ -167,7 +159,6 @@ export class DebugGUI {
   private updateOBBHelpersVisibility(visible: boolean): void {
     if (this.obbHelpersGroup) {
       this.obbHelpersGroup.visible = visible;
-      console.log('[DebugGUI] OBB helpers visibility changed to:', visible);
     } else {
       console.warn('[DebugGUI] OBB helpers group not registered!');
     }

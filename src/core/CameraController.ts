@@ -28,6 +28,8 @@ export class CameraController {
   private euler: THREE.Euler;
   private velocity: THREE.Vector3;
   private canJump: boolean;
+  private rotationSensitivity: number;
+  private invertY: boolean;
 
   // Rotation limits
   private readonly minPolarAngle = 0;
@@ -39,6 +41,8 @@ export class CameraController {
     this.euler = new THREE.Euler(0, 0, 0, 'YXZ');
     this.velocity = new THREE.Vector3();
     this.canJump = false;
+    this.rotationSensitivity = 0.002;
+    this.invertY = false;
 
     this.setupCamera();
   }
@@ -56,10 +60,18 @@ export class CameraController {
   /**
    * Updates camera rotation from input.
    */
-  updateRotation(deltaX: number, deltaY: number, sensitivity: number = 0.002): void {
-    // Update euler angles directly (don't extract from quaternion to avoid drift)
-    this.euler.y -= deltaX * sensitivity;
-    this.euler.x -= deltaY * sensitivity;
+  updateRotation(deltaX: number, deltaY: number, sensitivity?: number): void {
+    const effectiveSensitivity = sensitivity ?? this.rotationSensitivity;
+
+    // Yaw (left/right)
+    this.euler.y -= deltaX * effectiveSensitivity;
+
+    // Pitch (up/down) with optional inversion.
+    let pitchDelta = deltaY * effectiveSensitivity;
+    if (!this.invertY) {
+      pitchDelta = -pitchDelta;
+    }
+    this.euler.x += pitchDelta;
 
     // Clamp vertical rotation
     this.euler.x = Math.max(
@@ -139,6 +151,22 @@ export class CameraController {
    */
   getCanJump(): boolean {
     return this.canJump;
+  }
+
+  /**
+   * Sets base mouse sensitivity multiplier for look controls.
+   * Value is relative (1 = default), clamped to a safe range.
+   */
+  setMouseSensitivity(multiplier: number): void {
+    const clamped = Math.max(0.3, Math.min(3, multiplier));
+    this.rotationSensitivity = 0.002 * clamped;
+  }
+
+  /**
+   * Enables or disables inverted Y look controls.
+   */
+  setInvertY(invert: boolean): void {
+    this.invertY = invert;
   }
 }
 

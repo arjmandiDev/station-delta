@@ -136,17 +136,6 @@
         "collision": true
       },
       {
-        "id": "plane",
-        "type": "gltf",
-        "lod": [
-          { "level": "low", "url": "/assets/zones/main-room/plane.glb" }
-        ],
-        "position": [0, 0, 0],
-        "rotation": [0, 0, 0],
-        "scale": [1, 1, 1],
-        "collision": true
-      },
-      {
         "id": "water-lock",
         "type": "gltf",
         "lod": [

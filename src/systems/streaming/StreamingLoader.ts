@@ -212,9 +212,27 @@ export class StreamingLoader {
     onProgress?: LoadCallback,
     signal?: AbortSignal
   ): Promise<THREE.Object3D | THREE.Texture | null> {
-    const lod = asset.lod.find((l) => l.level === lodLevel) || asset.lod[0];
+    // Pick the best available LOD for this asset:
+    // 1. Try the requested level.
+    // 2. If missing, fall back to the next lower level (e.g., medium → low).
+    // 3. As a final fallback, use the first LOD entry defined in the manifest.
+    const order: Array<'low' | 'medium' | 'high'> = ['low', 'medium', 'high'];
+    const requestedIndex = order.indexOf(lodLevel);
+
+    let lod = asset.lod.find((l) => l.level === lodLevel);
+
+    if (!lod && requestedIndex > 0) {
+      for (let i = requestedIndex - 1; i >= 0; i--) {
+        const candidate = asset.lod.find((l) => l.level === order[i]);
+        if (candidate) {
+          lod = candidate;
+          break;
+        }
+      }
+    }
+
     if (!lod) {
-      throw new Error(`No LOD level ${lodLevel} found for asset ${asset.id}`);
+      lod = asset.lod[0];
     }
 
     switch (asset.type) {
