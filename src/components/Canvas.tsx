@@ -22,8 +22,14 @@ import { DynamicResolution } from '../systems/performance/DynamicResolution';
 import { Profiler } from '../systems/profiling/Profiler';
 import { TelemetryCollector } from '../systems/profiling/TelemetryCollector';
 import { ZoneManager } from '../systems/streaming/ZoneManager';
+import { LODSystem } from '../systems/lod/LODSystem';
 import { Flashlight } from '../systems/Flashlight';
 import { DebugGUI } from '../systems/DebugGUI';
+import {
+  registerGameAPI,
+  type BunkerDestination,
+  type BunkerSettings,
+} from '../systems/ui/GameUIBridge';
 import type { DeviceInfo } from '../utils/device';
 import { PLAYER_RADIUS, PLAYER_HEIGHT, PLAYER_EYE_HEIGHT } from '../utils/constants';
 import { parseZoneManifest } from '../systems/streaming/AssetManifest';
@@ -31,9 +37,20 @@ import { parseZoneManifest } from '../systems/streaming/AssetManifest';
 interface CanvasProps {
   deviceInfo: DeviceInfo;
   onReady?: () => void;
+  onPointerLockChange?: (locked: boolean) => void;
+  onLoadingProgress?: (progress: number, message: string) => void;
+  startLoading?: boolean;
+  onLoadingComplete?: () => void;
 }
 
-export function Canvas({ deviceInfo, onReady }: CanvasProps) {
+export function Canvas({
+  deviceInfo,
+  onReady,
+  onPointerLockChange,
+  onLoadingProgress,
+  startLoading,
+  onLoadingComplete,
+}: CanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneManagerRef = useRef<SceneManager | null>(null);
   const rendererRef = useRef<RendererManager | null>(null);
@@ -48,6 +65,17 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
   const zoneManagerRef = useRef<ZoneManager | null>(null);
   const flashlightRef = useRef<Flashlight | null>(null);
   const debugGUIRef = useRef<DebugGUI | null>(null);
+  const lodSystemRef = useRef<LODSystem | null>(null);
+
+  const hasLoadedInitialZoneRef = useRef(false);
+  /**
+   * Indicates whether the world/zone has finished loading enough geometry
+   * and collision data for player physics to run safely.
+   * 
+   * When `false`, the navigation system will not step physics, which prevents
+   * the player from visually falling through empty space while assets stream in.
+   */
+  const isPhysicsReadyRef = useRef(false);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -108,6 +136,10 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
     const zoneManager = new ZoneManager(scene, sceneManager);
     zoneManagerRef.current = zoneManager;
 
+    // Add LOD system to upgrade zones in the background after initial low LOD load
+    const lodSystem = new LODSystem(zoneManager, camera);
+    lodSystemRef.current = lodSystem;
+
     // Add Flashlight
     const flashlight = new Flashlight(scene, camera);
     flashlightRef.current = flashlight;
@@ -163,13 +195,23 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
 
     // Set up zone transition callback
     navigation.setZoneTransitionCallback((transition) => {
+      // Disable physics while we unload the current zone and load the next one,
+      // so the player does not fall through empty space during streaming.
+      isPhysicsReadyRef.current = false;
+
       zoneManager.setCurrentZone(transition.zoneId, 'low').then(() => {
         // Teleport player to transition position after zone loads
         if (transition.position) {
           navigation.teleport(transition.position, transition.rotation);
         }
+
+        // Re-enable physics now that the destination zone is ready.
+        isPhysicsReadyRef.current = true;
       }).catch((error) => {
         console.error('Zone transition failed:', error);
+        // Leave physics disabled on failure to avoid updating against
+        // an inconsistent or partially loaded world.
+        isPhysicsReadyRef.current = false;
       });
     });
 
@@ -184,52 +226,11 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       cameraController.updateAspect(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', handleResize);
-    // Load initial zone - ensure RectAreaLightUniformsLib is initialized first
-    const loadInitialZone = async () => {
-      try {
-        // Ensure RectAreaLightUniformsLib is initialized before loading lights
-        await sceneManager.ensureRectAreaLightSupport();
-        
-        const response = await fetch('/assets/zones/main-room/manifest.json');
-        const manifestData = await response.json();
-        const manifest = parseZoneManifest(manifestData);
-        zoneManager.registerZone(manifest);
-        await zoneManager.setCurrentZone('main-room', 'low');
-        if (manifest.initialPosition) {
-          const startPosition = new THREE.Vector3(...manifest.initialPosition);
-          navigation.teleport(startPosition, manifest.initialRotation 
-            ? new THREE.Euler(...manifest.initialRotation) 
-            : undefined);
-        }
-      } catch (error) {
-        console.error('Failed to load initial zone:', error);
-      }
-    };
-    loadInitialZone();
-    
 
-    // Add floor and cube - store references for cleanup (temporary test objects)
-    const floorGeometry = new THREE.PlaneGeometry(20, 20);
-    const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = 0;
-    scene.add(floor);
-    CollisionSystem.registerMesh(floor);
-
-    const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
-    const cubeMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-    const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
-    cube.position.set(0, 0.5, -3);
-    scene.add(cube);
-    CollisionSystem.registerMesh(cube);
-
-    // Store meshes for cleanup
-    const meshesToCleanup: THREE.Mesh[] = [floor, cube];
-
-    // Input handling
+    // Input & simulation state
     const keys: Set<string> = new Set();
     let isPointerLocked = false;
+    let isPaused = false;
     let nKeyPressed = false; // Track N key state to prevent multiple toggles
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -254,13 +255,13 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       const gameKey = keyMap[keyCode];
       const gameKeys = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'space', 'n'];
       
-      console.log('[KeyDown] Code:', keyCode, 'Key:', e.key, 'Mapped to:', gameKey);
+      //console.log('[KeyDown] Code:', keyCode, 'Key:', e.key, 'Mapped to:', gameKey);
       
       if (gameKey && gameKeys.includes(gameKey)) {
         e.preventDefault();
         e.stopPropagation();
         keys.add(gameKey);
-        console.log('[KeyDown] Keys Set:', Array.from(keys));
+        //console.log('[KeyDown] Keys Set:', Array.from(keys));
         
         // Handle flashlight toggle (N key)
         if (gameKey === 'n' && !nKeyPressed) {
@@ -290,11 +291,11 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       
       const gameKey = keyMap[keyCode];
       
-      console.log('[KeyUp] Code:', keyCode, 'Key:', e.key, 'Mapped to:', gameKey);
+      //console.log('[KeyUp] Code:', keyCode, 'Key:', e.key, 'Mapped to:', gameKey);
       
       if (gameKey) {
         keys.delete(gameKey);
-        console.log('[KeyUp] Keys Set:', Array.from(keys));
+        //console.log('[KeyUp] Keys Set:', Array.from(keys));
         
         // Reset N key state when released
         if (gameKey === 'n') {
@@ -304,7 +305,7 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (isPointerLocked) {
+      if (isPointerLocked && !isPaused) {
         navigation.handleRotation(e.movementX, e.movementY);
       }
     };
@@ -315,9 +316,111 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       }
     };
 
-    const handlePointerLockChange = () => {
+    const handlePointerLockChange = (event: any ) => {
       isPointerLocked = document.pointerLockElement === canvas;
+      // console.log('Pointer lock change event:', event, document.pointerLockElement);
+      if (onPointerLockChange) {
+        console.log('Pointer lock change event: (in canvas)', isPointerLocked);
+        onPointerLockChange(isPointerLocked);
+      }
     };
+
+    /**
+     * Game UI bridge implementation
+     * Exposes pause, rooms, and settings controls to React overlays.
+     */
+    const setPaused = (paused: boolean) => {
+      isPaused = paused;
+
+      if (paused) {
+        // Release pointer lock so the user can interact with overlays.
+        if (document.pointerLockElement === canvas) {
+          document.exitPointerLock();
+        }
+      }
+    };
+
+    const rooms = async (dest: BunkerDestination) => {
+      try {
+        // For now all destinations live inside the main-room zone.
+        const targetZoneId = 'main-room';
+
+        // Temporarily disable physics while we unload/reload zones so the player
+        // does not fall while collision meshes are unavailable.
+        isPhysicsReadyRef.current = false;
+
+        await zoneManager.setCurrentZone(targetZoneId, 'low');
+
+        // Base spawn position from manifest.
+        const basePosition = new THREE.Vector3(0, 30.8072, -5);
+
+        let position = basePosition.clone();
+        let rotation: THREE.Euler | undefined = undefined;
+
+        switch (dest) {
+          case 'main':
+            // Center of the bunker.
+            position = basePosition.clone();
+            rotation = new THREE.Euler(0, 0, 0);
+            break;
+          case 'projects':
+            // Placeholder: shift toward the corridor / work area.
+            position = basePosition.clone().add(new THREE.Vector3(5, 0, -2));
+            rotation = new THREE.Euler(0, -Math.PI / 2, 0);
+            break;
+          case 'contact':
+            // Placeholder: shift toward the communications corner.
+            position = basePosition.clone().add(new THREE.Vector3(-4, 0, 1));
+            rotation = new THREE.Euler(0, Math.PI / 2, 0);
+            break;
+        }
+
+        navigation.teleport(position, rotation);
+
+        // Re-enable physics now that the destination zone is loaded and the
+        // player has been teleported onto valid geometry.
+        isPhysicsReadyRef.current = true;
+      } catch (error) {
+        console.error('Rooms failed:', error);
+        // Keep physics disabled on failure to avoid running against an
+        // inconsistent world state.
+        isPhysicsReadyRef.current = false;
+      }
+    };
+
+    const applySettings = (settings: BunkerSettings) => {
+      // Graphics: resolution scale and shadows derived from quality preset.
+      const rendererInstance = renderer.getRenderer();
+
+      const resolutionScale = Math.max(0.5, Math.min(1, settings.graphics.resolutionScale / 100));
+      const targetPixelRatio = deviceInfo.pixelRatio * resolutionScale;
+      renderer.setPixelRatio(targetPixelRatio);
+
+      // Simple automatic shadow toggle based on quality (no explicit shadow setting).
+      if (settings.graphics.quality === 'low') {
+        rendererInstance.shadowMap.enabled = false;
+      } else {
+        rendererInstance.shadowMap.enabled = true;
+      }
+
+      // Connect graphics quality preset to LOD system so zones upgrade to the
+      // appropriate LOD level in the background.
+      if (lodSystemRef.current) {
+        lodSystemRef.current.setQualityPreset(settings.graphics.quality);
+      }
+
+      // Controls: mouse sensitivity & invert Y.
+      cameraController.setMouseSensitivity(settings.controls.mouseSensitivity);
+      cameraController.setInvertY(settings.controls.invertY);
+
+      // Audio & UI are currently managed at the React layer (no audio engine yet).
+    };
+
+    registerGameAPI({
+      setPaused,
+      rooms,
+      applySettings,
+    });
 
     if (!deviceInfo.isMobile) {
       // Add keyboard event listeners with capture mode to catch events early
@@ -325,7 +428,7 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       window.addEventListener('keyup', handleKeyUp, true);
       canvas.addEventListener('mousemove', handleMouseMove);
       canvas.addEventListener('click', handleClick);
-      document.addEventListener('pointerlockchange', handlePointerLockChange);
+      document.addEventListener('pointerlockchange', handlePointerLockChange, false);
       
       // Make canvas focusable to receive keyboard events
       canvas.setAttribute('tabindex', '0');
@@ -404,48 +507,53 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       // to prevent unnecessary updates. May need to re-apply canvas size after pixel ratio changes.
       // dynamicResolution.update(currentTime, metrics);
 
-      // Set movement input - use mobile controls on mobile, keyboard on desktop
-      if (deviceInfo.isMobile && mobileControls) {
-        const controlState = mobileControls.getControlState();
-        navigation.setMovementInput({
-          moveForward: controlState.moveForward,
-          moveBackward: controlState.moveBackward,
-          moveLeft: controlState.moveLeft,
-          moveRight: controlState.moveRight,
-          jump: controlState.jump,
-        });
-        // Handle rotation from touch (always call to ensure smooth rotation)
-        navigation.handleRotation(controlState.rotationDeltaX, controlState.rotationDeltaY, 0.002);
-      } else {
-        // Desktop keyboard input (using mapped keys)
-        const moveForward = keys.has('w') || keys.has('arrowup');
-        const moveBackward = keys.has('s') || keys.has('arrowdown');
-        const moveLeft = keys.has('a') || keys.has('arrowleft');
-        const moveRight = keys.has('d') || keys.has('arrowright');
-        const jump = keys.has('space');
-        
-        if (moveForward || moveBackward || moveLeft || moveRight || jump) {
-          console.log('[Animate] Movement input:', {
+      const physicsEnabled = !isPaused && isPhysicsReadyRef.current;
+
+      // Set movement input - use mobile controls on mobile, keyboard on desktop.
+      // When physics is disabled (e.g., while loading a zone), we feed zero input
+      // so the player stays perfectly still until the world is ready.
+      if (physicsEnabled) {
+        if (deviceInfo.isMobile && mobileControls) {
+          const controlState = mobileControls.getControlState();
+          navigation.setMovementInput({
+            moveForward: controlState.moveForward,
+            moveBackward: controlState.moveBackward,
+            moveLeft: controlState.moveLeft,
+            moveRight: controlState.moveRight,
+            jump: controlState.jump,
+          });
+          // Handle rotation from touch (always call to ensure smooth rotation)
+          navigation.handleRotation(controlState.rotationDeltaX, controlState.rotationDeltaY, 0.002);
+        } else {
+          // Desktop keyboard input (using mapped keys)
+          const moveForward = keys.has('w') || keys.has('arrowup');
+          const moveBackward = keys.has('s') || keys.has('arrowdown');
+          const moveLeft = keys.has('a') || keys.has('arrowleft');
+          const moveRight = keys.has('d') || keys.has('arrowright');
+          const jump = keys.has('space');
+          
+          navigation.setMovementInput({
             moveForward,
             moveBackward,
             moveLeft,
             moveRight,
             jump,
-            keysSet: Array.from(keys)
           });
         }
-        
+      } else {
         navigation.setMovementInput({
-          moveForward,
-          moveBackward,
-          moveLeft,
-          moveRight,
-          jump,
+          moveForward: false,
+          moveBackward: false,
+          moveLeft: false,
+          moveRight: false,
+          jump: false,
         });
       }
 
       // Update navigation (handles physics, movement, and collision)
-      navigation.update(deltaTime);
+      if (physicsEnabled) {
+        navigation.update(deltaTime);
+      }
 
       // Update player cylinder position
       // Camera is at eye height (1.6m from ground)
@@ -825,6 +933,11 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       // Update scene
       sceneManager.update(deltaTime);
 
+      // Background LOD management: upgrade current zone to higher quality after start
+      if (lodSystemRef.current) {
+        lodSystemRef.current.update(currentTime);
+      }
+
       // Ensure camera and scene matrices are updated before rendering (fixes rotation disappearing issue)
       const camera = cameraController.getCamera();
       camera.updateMatrixWorld();
@@ -863,10 +976,7 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
         document.removeEventListener('pointerlockchange', handlePointerLockChange);
       }
       
-      // Unregister collision meshes
-      for (const mesh of meshesToCleanup) {
-        CollisionSystem.unregisterMesh(mesh);
-      }
+      // Clear registered collision data
       CollisionSystem.clear();
 
       // Cleanup OBB helpers
@@ -938,8 +1048,83 @@ export function Canvas({ deviceInfo, onReady }: CanvasProps) {
       profilerRef.current = null;
       telemetryRef.current = null;
       zoneManagerRef.current = null;
+      lodSystemRef.current = null;
     };
-  }, [deviceInfo, onReady]);
+  }, []);
+
+  // Start initial zone loading when requested by parent (Enter Bunker click).
+  useEffect(() => {
+    if (!startLoading || hasLoadedInitialZoneRef.current) {
+      return;
+    }
+
+    const sceneManager = sceneManagerRef.current;
+    const navigation = navigationRef.current;
+    const zoneManager = zoneManagerRef.current;
+
+    if (!sceneManager || !navigation || !zoneManager) {
+      // Core systems not ready yet; wait for next render.
+      return;
+    }
+
+    hasLoadedInitialZoneRef.current = true;
+
+    const loadInitialZone = async () => {
+      try {
+        // Physics must stay disabled until we have loaded the initial zone
+        // and teleported the player onto valid ground.
+        isPhysicsReadyRef.current = false;
+
+        if (onLoadingProgress) {
+          onLoadingProgress(0, 'Initializing scene...');
+        }
+
+        // Ensure RectAreaLightUniformsLib is initialized before loading lights.
+        await sceneManager.ensureRectAreaLightSupport();
+
+        if (onLoadingProgress) {
+          onLoadingProgress(10, 'Loading zone manifest...');
+        }
+
+        const response = await fetch('/assets/zones/main-room/manifest.json');
+        const manifestData = await response.json();
+        const manifest = parseZoneManifest(manifestData);
+        zoneManager.registerZone(manifest);
+
+        if (onLoadingProgress) {
+          onLoadingProgress(20, 'Loading assets...');
+        }
+
+        await zoneManager.setCurrentZone('main-room', 'low', onLoadingProgress);
+
+        if (manifest.initialPosition) {
+          const startPosition = new THREE.Vector3(...manifest.initialPosition);
+          navigation.teleport(
+            startPosition,
+            manifest.initialRotation ? new THREE.Euler(...manifest.initialRotation) : undefined,
+          );
+        }
+
+        // Initial zone is fully loaded; physics can now safely run.
+        isPhysicsReadyRef.current = true;
+
+        if (onLoadingComplete) {
+          onLoadingComplete();
+        }
+      } catch (error) {
+        console.error('Failed to load initial zone:', error);
+        hasLoadedInitialZoneRef.current = false;
+        // Keep physics disabled on failure so the player does not move in an
+        // undefined world state.
+        isPhysicsReadyRef.current = false;
+        if (onLoadingProgress) {
+          onLoadingProgress(0, 'Loading failed. Please refresh.');
+        }
+      }
+    };
+
+    loadInitialZone();
+  }, [startLoading, onLoadingProgress, onLoadingComplete]);
 
   return <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />;
 }

@@ -544,4 +544,3 @@ export class CollisionSystem {
     return this.objectMeshes;
   }
 }
-

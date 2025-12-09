@@ -25,6 +25,7 @@ export class LODSystem {
   private camera: THREE.Camera;
   private updateInterval: number = 1000; // Update every second
   private lastUpdate: number = 0;
+  private qualityPreset: LODLevel = 'medium';
 
   constructor(zoneManager: ZoneManager, camera: THREE.Camera) {
     this.lodManager = new LODManager();
@@ -50,14 +51,28 @@ export class LODSystem {
     const zone = this.zoneManager.getZone(currentZoneId);
     if (!zone) return;
 
-    // Determine target LOD for current zone
-    const targetLOD = this.lodManager.getLODLevel(0); // Player is in zone, use high quality
+    // Determine target LOD for current zone from the active quality preset.
+    const targetLOD = this.qualityPreset;
 
-    // Upgrade zone LOD if needed
-    if (targetLOD !== zone.lodLevel && targetLOD !== 'low') {
-      this.zoneManager.loadZone(currentZoneId, targetLOD).catch((error) => {
-        console.warn(`Failed to upgrade zone LOD:`, error);
+    // Adjust zone LOD to match the active quality preset (upgrade or downgrade).
+    if (targetLOD !== zone.lodLevel) {
+      console.log('[LODSystem] Changing zone LOD', {
+        zoneId: currentZoneId,
+        from: zone.lodLevel,
+        to: targetLOD,
       });
+
+      this.zoneManager
+        .loadZone(currentZoneId, targetLOD)
+        .then(() => {
+          console.log('[LODSystem] Zone LOD upgrade complete', {
+            zoneId: currentZoneId,
+            level: targetLOD,
+          });
+        })
+        .catch((error) => {
+          console.warn(`Failed to upgrade zone LOD:`, error);
+        });
     }
   }
 
@@ -73,6 +88,14 @@ export class LODSystem {
    */
   getLODManager(): LODManager {
     return this.lodManager;
+  }
+
+  /**
+   * Sets the desired LOD level for the current zone based on the user's
+   * graphics quality preset. This value is applied on the next update tick.
+   */
+  setQualityPreset(level: LODLevel): void {
+    this.qualityPreset = level;
   }
 }
 

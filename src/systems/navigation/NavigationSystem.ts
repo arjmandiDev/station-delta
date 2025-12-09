@@ -94,7 +94,14 @@ export class NavigationSystem {
    * Triggers zone transition.
    */
   transitionToZone(zoneId: string, position: THREE.Vector3, rotation?: THREE.Euler): void {
-    this.teleport(position, rotation);
+    /**
+     * Defer teleport until the target zone has finished loading.
+     * 
+     * The actual loading and teleportation are handled by the registered
+     * zone transition callback (typically in `Canvas.tsx`), which will:
+     *   1. Load the target zone with `ZoneManager.setCurrentZone`.
+     *   2. Teleport the player once collision data is ready.
+     */
     if (this.onZoneTransition) {
       this.onZoneTransition({ zoneId, position, rotation });
     }
