@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import { OBB } from 'three/addons/math/OBB.js';
-import { PLAYER_HEIGHT, PLAYER_RADIUS, PLAYER_EYE_HEIGHT } from '../../utils/constants';
+import { PLAYER_HEIGHT, PLAYER_RADIUS, PLAYER_EYE_HEIGHT, PLAYER_SPEED } from '../../utils/constants';
 
 // Extend Mesh and BufferGeometry to include BVH
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -163,7 +163,7 @@ export class CollisionSystem {
     // 2 vertical rows from surface (near ground) to eye height
     // Distribute evenly from base to eye height
     const numRows = 2;
-    const baseHeight = PLAYER_RADIUS; // Start from surface (just above ground)
+    const baseHeight = PLAYER_RADIUS*4; // Start from surface (just above ground)
     const topHeight = PLAYER_EYE_HEIGHT; // End at eye height
     const verticalRange = topHeight - baseHeight;
     
@@ -398,9 +398,14 @@ export class CollisionSystem {
    * Resolves penetration between player and object OBBs (based on obb.js lines 389-433).
    * @param playerOBB Player OBB
    * @param objectOBB Object OBB
+   * @param deltaTimeSeconds Physics step time in seconds (for frame-rate aware pushback)
    * @returns Push-out vector to resolve penetration
    */
-  static resolvePenetration(playerOBB: OBB, objectOBB: OBB): THREE.Vector3 {
+  static resolvePenetration(
+    playerOBB: OBB,
+    objectOBB: OBB,
+    deltaTimeSeconds: number,
+  ): THREE.Vector3 {
     const playerCenter = playerOBB.center;
     const objectCenter = objectOBB.center;
 
@@ -439,10 +444,22 @@ export class CollisionSystem {
     // If penetrating, push out
     if (currentDistance < minSeparation) {
       const penetrationDepth = minSeparation - currentDistance;
-      // Push out towards minimum separation with a small margin, but clamp to avoid large jumps.
-      const MARGIN = 0.005; // Small extra distance to avoid sticking on the surface
-      const MAX_PUSH = 0.02; // Max push-out distance per frame (in meters)
-      const pushDistance = Math.min(penetrationDepth + MARGIN, MAX_PUSH);
+
+      /**
+       * Push distance is:
+       * - proportional to penetration depth (to get out of the object),
+       * - but limited by a max push *per second* so behavior is smooth and
+       *   consistent across different FPS.
+       */
+      const MARGIN = 0.0005; // Small extra distance to avoid sticking on the surface
+      const MAX_PUSH_PER_SECOND = PLAYER_SPEED * 2; // Tunable factor
+
+      const targetPush = penetrationDepth + MARGIN;
+      const maxPushThisStep = Math.max(0, MAX_PUSH_PER_SECOND * deltaTimeSeconds);
+
+      const pushDistance =
+        maxPushThisStep > 0 ? Math.min(targetPush, maxPushThisStep) : targetPush;
+
       return direction.clone().multiplyScalar(pushDistance);
     }
 

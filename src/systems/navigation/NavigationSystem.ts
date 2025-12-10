@@ -50,7 +50,8 @@ export class NavigationSystem {
    */
   update(deltaTime: number): void {
     const newPosition = this.playerPhysics.update(deltaTime, this.cameraController, this.input);
-    this.cameraController.setPosition(newPosition);
+    // Apply camera damping during normal movement and collisions.
+    this.cameraController.setPosition(newPosition, true);
 
     // Reset rotation deltas
     this.input.rotationX = 0;
@@ -83,11 +84,18 @@ export class NavigationSystem {
    * Teleports player to position.
    */
   teleport(position: THREE.Vector3, rotation?: THREE.Euler): void {
-    this.cameraController.setPosition(position);
+    // Snap the target position onto the ground immediately so that after a
+    // zone load (especially on mobile), the player does not visually fall
+    // from a high spawn Y before physics corrects their height.
+    const snappedPosition = this.playerPhysics.snapToGroundFrom(position);
+
+    // Zone teleport: snap camera directly to new position without damping so
+    // transitions feel instant and avoid trailing motion across zones.
+    this.cameraController.setPosition(snappedPosition, false);
     if (rotation) {
       this.cameraController.setRotation(rotation);
     }
-    this.playerPhysics.teleport(position);
+    this.playerPhysics.teleport(snappedPosition);
   }
 
   /**

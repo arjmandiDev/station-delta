@@ -8,8 +8,6 @@
  * Side effects: Creates UI elements, handles touch events.
  */
 
-import type { CameraInput } from '../../core/CameraController';
-
 export interface MobileControlState {
   moveForward: boolean;
   moveBackward: boolean;
@@ -25,9 +23,15 @@ export class MobileControls {
   private joystick: HTMLElement | null = null;
   private joystickKnob: HTMLElement | null = null;
   private jumpButton: HTMLElement | null = null;
-  private isJoystickActive: boolean = false;
   private joystickCenter: { x: number; y: number } = { x: 0, y: 0 };
   private joystickRadius: number = 50;
+  /**
+   * Current joystick offset in pixels relative to the center.
+   * 
+   * We keep this in JS instead of parsing the CSS `transform` string so that
+   * movement logic stays robust against browser-normalized `calc()` syntax.
+   */
+  private joystickOffset: { x: number; y: number } = { x: 0, y: 0 };
   private touchId: number | null = null;
   private lastTouchX: number = 0;
   private lastTouchY: number = 0;
@@ -141,7 +145,6 @@ export class MobileControls {
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
     };
-    this.isJoystickActive = true;
   }
 
   /**
@@ -164,6 +167,10 @@ export class MobileControls {
     const x = Math.cos(angle) * clampedDistance;
     const y = Math.sin(angle) * clampedDistance;
 
+    // Store offset for input logic
+    this.joystickOffset.x = x;
+    this.joystickOffset.y = y;
+
     this.joystickKnob.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
   }
 
@@ -178,7 +185,11 @@ export class MobileControls {
 
     e.preventDefault();
     this.touchId = null;
-    this.isJoystickActive = false;
+
+    // Reset offset when touch ends
+    this.joystickOffset.x = 0;
+    this.joystickOffset.y = 0;
+
     if (this.joystickKnob) {
       this.joystickKnob.style.transform = 'translate(-50%, -50%)';
     }
@@ -215,7 +226,7 @@ export class MobileControls {
   /**
    * Handles rotation touch end.
    */
-  private handleRotationEnd(e: TouchEvent): void {
+  private handleRotationEnd(_e: TouchEvent): void {
     this.isRotating = false;
     this.rotationDeltaX = 0;
     this.rotationDeltaY = 0;
@@ -237,18 +248,8 @@ export class MobileControls {
       };
     }
 
-    const transform = this.joystickKnob.style.transform;
-    const match = transform.match(/translate\(calc\(-50% \+ (-?\d+)px\), calc\(-50% \+ (-?\d+)px\)\)/);
-    let x = 0;
-    let y = 0;
-
-    if (match) {
-      x = parseFloat(match[1]) || 0;
-      y = parseFloat(match[2]) || 0;
-    }
-
-    const normalizedX = x / this.joystickRadius;
-    const normalizedY = y / this.joystickRadius;
+    const normalizedX = this.joystickOffset.x / this.joystickRadius;
+    const normalizedY = this.joystickOffset.y / this.joystickRadius;
 
     const jump = this.jumpButton?.classList.contains('active') || false;
 

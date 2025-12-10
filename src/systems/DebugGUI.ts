@@ -16,6 +16,11 @@ export interface DebugGUIConfig {
   showPlayerCylinder: boolean;
   showRayHelpers: boolean;
   showOBBHelpers: boolean;
+  /**
+   * When true, enables the on-screen develop overlay (e.g., FPS display).
+   * This is handled externally by systems such as the Canvas render loop.
+   */
+  showDevOverlay: boolean;
 }
 
 export class DebugGUI {
@@ -33,6 +38,7 @@ export class DebugGUI {
       showPlayerCylinder: false,
       showRayHelpers: false,
       showOBBHelpers: false,
+      showDevOverlay: false,
     };
 
     this.gui = new GUI();
@@ -76,6 +82,17 @@ export class DebugGUI {
       .name('Show OBB Helpers')
       .onChange((value: boolean) => {
         this.updateOBBHelpersVisibility(value);
+        if (this.onConfigChange) {
+          this.onConfigChange(this.config);
+        }
+      });
+
+    // Add overlay / performance controls (used e.g. on mobile where keyboard is not available)
+    const overlayFolder = this.gui.addFolder('Overlay');
+    overlayFolder
+      .add(this.config, 'showDevOverlay')
+      .name('Show Dev Overlay (FPS)')
+      .onChange(() => {
         if (this.onConfigChange) {
           this.onConfigChange(this.config);
         }

@@ -52,6 +52,7 @@ export function Canvas({
   onLoadingComplete,
 }: CanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const devOverlayRef = useRef<HTMLDivElement | null>(null);
   const sceneManagerRef = useRef<SceneManager | null>(null);
   const rendererRef = useRef<RendererManager | null>(null);
   const cameraControllerRef = useRef<CameraController | null>(null);
@@ -148,9 +149,16 @@ export function Canvas({
     const debugGUI = new DebugGUI();
     debugGUIRef.current = debugGUI;
 
-    // Connect light helpers to GUI
+    // Connect debug configuration to scene and develop overlay
     debugGUI.setOnConfigChange((config) => {
+      // Light helpers visibility
       sceneManager.setLightHelpersVisible(config.showLightHelpers);
+
+      // Sync develop mode overlay with GUI switch (works on mobile too)
+      isDevMode = config.showDevOverlay;
+      if (devOverlayRef.current) {
+        devOverlayRef.current.style.display = isDevMode ? 'block' : 'none';
+      }
     });
 
     // Create player cylinder helper
@@ -232,11 +240,26 @@ export function Canvas({
     let isPointerLocked = false;
     let isPaused = false;
     let nKeyPressed = false; // Track N key state to prevent multiple toggles
+    let isDevMode = false; // Develop mode for displaying helper data (e.g., FPS)
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Use e.code instead of e.key for language-independent key detection
       // e.code returns physical key codes (KeyW, KeyA, etc.) regardless of keyboard layout
       const keyCode = e.code;
+
+      // Handle develop mode toggle on U key (KeyU)
+      if (keyCode === 'KeyU') {
+        e.preventDefault();
+        e.stopPropagation();
+        isDevMode = !isDevMode;
+
+        // Update overlay visibility immediately when toggling
+        if (devOverlayRef.current) {
+          devOverlayRef.current.style.display = isDevMode ? 'block' : 'none';
+        }
+
+        return;
+      }
       
       // Map physical key codes to game actions
       const keyMap: Record<string, string> = {
@@ -274,6 +297,11 @@ export function Canvas({
     const handleKeyUp = (e: KeyboardEvent) => {
       // Use e.code instead of e.key for language-independent key detection
       const keyCode = e.code;
+
+      // Ignore U key here (develop mode is toggled on keydown only)
+      if (keyCode === 'KeyU') {
+        return;
+      }
       
       // Map physical key codes to game actions
       const keyMap: Record<string, string> = {
@@ -316,7 +344,7 @@ export function Canvas({
       }
     };
 
-    const handlePointerLockChange = (event: any ) => {
+    const handlePointerLockChange = (_event: any ) => {
       isPointerLocked = document.pointerLockElement === canvas;
       // console.log('Pointer lock change event:', event, document.pointerLockElement);
       if (onPointerLockChange) {
@@ -446,9 +474,10 @@ export function Canvas({
     const handleVisibilityChange = () => {
       isVisible = !document.hidden;
       if (isVisible) {
-        // Tab became visible, restart animation loop
+        // Tab became visible: reset time accumulator so the next frame
+        // has a sane delta, but do NOT start a new animation loop here.
+        // The existing requestAnimationFrame chain will continue automatically.
         lastTime = performance.now();
-        animate();
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -480,12 +509,32 @@ export function Canvas({
       }
 
       const currentTime = performance.now();
-      const deltaTime = (currentTime - lastTime) / 1000;
-      const frameTime = currentTime - lastTime;
+      const elapsedSeconds = (currentTime - lastTime) / 1000;
+
+      // For testing: hard-cap simulation/render to a maximum of 50 FPS.
+      // This is done by skipping frames until at least 1/50s has passed.
+      const MAX_FPS = 150;
+      const MIN_FRAME_TIME_SECONDS = 1 / MAX_FPS;
+      if (elapsedSeconds < MIN_FRAME_TIME_SECONDS) {
+        animationFrameId = requestAnimationFrame(animate);
+        return;
+      }
+
+      const deltaTime = elapsedSeconds;
+      const frameTime = elapsedSeconds * 1000;
       lastTime = currentTime;
 
       // Update performance monitor
       const metrics = performanceMonitor.update(renderer, currentTime);
+
+      // When develop mode is enabled, update the on-screen overlay with helper data (e.g., FPS)
+      if (isDevMode && devOverlayRef.current) {
+        const fpsText = metrics.fps.toFixed(1);
+        const frameTimeText = metrics.frameTime.toFixed(2);
+        devOverlayRef.current.textContent =
+          `FPS: ${fpsText} | Frame: ${frameTimeText} ms | ` +
+          `Draw calls: ${metrics.drawCalls} | Triangles: ${metrics.triangles}`;
+      }
 
       // Record frame time for profiling
       profiler.recordFrameTime(frameTime);
@@ -507,7 +556,20 @@ export function Canvas({
       // to prevent unnecessary updates. May need to re-apply canvas size after pixel ratio changes.
       // dynamicResolution.update(currentTime, metrics);
 
-      const physicsEnabled = !isPaused && isPhysicsReadyRef.current;
+      // Physics should only run when the game is unpaused *and* the active zone has
+      // fully finished loading its assets and collision data.
+      let physicsEnabled = !isPaused && isPhysicsReadyRef.current;
+
+      // Extra safety: also require the current zone to be marked as loaded.
+      const activeZoneId = zoneManager.getCurrentZoneId();
+      if (!activeZoneId) {
+        physicsEnabled = false;
+      } else {
+        const activeZone = zoneManager.getZone(activeZoneId);
+        if (!activeZone || !activeZone.loaded) {
+          physicsEnabled = false;
+        }
+      }
 
       // Set movement input - use mobile controls on mobile, keyboard on desktop.
       // When physics is disabled (e.g., while loading a zone), we feed zero input
@@ -552,7 +614,10 @@ export function Canvas({
 
       // Update navigation (handles physics, movement, and collision)
       if (physicsEnabled) {
-        navigation.update(deltaTime);
+        // Clamp physics timestep to avoid huge jumps on slow frames
+        // (especially important on mobile devices).
+        const physicsDelta = Math.min(deltaTime, 0.1); // max 100 ms per step
+        navigation.update(physicsDelta);
       }
 
       // Update player cylinder position
@@ -1126,6 +1191,34 @@ export function Canvas({
     loadInitialZone();
   }, [startLoading, onLoadingProgress, onLoadingComplete]);
 
-  return <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />;
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <canvas
+        ref={canvasRef}
+        style={{ display: 'block', width: '100%', height: '100%' }}
+      />
+      {/*
+        Develop mode overlay for helper data (e.g., FPS).
+        Toggled with the U key (KeyU) in the canvas input handler.
+      */}
+      <div
+        ref={devOverlayRef}
+        style={{
+          position: 'absolute',
+          top: '8px',
+          left: '8px',
+          padding: '4px 8px',
+          fontSize: '12px',
+          fontFamily: 'monospace',
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',
+          color: '#ffffff',
+          borderRadius: '4px',
+          pointerEvents: 'none',
+          display: 'none',
+          whiteSpace: 'nowrap',
+        }}
+      />
+    </div>
+  );
 }
 

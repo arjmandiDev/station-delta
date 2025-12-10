@@ -30,6 +30,16 @@ export class CameraController {
   private canJump: boolean;
   private rotationSensitivity: number;
   private invertY: boolean;
+  /**
+   * Smoothed camera position target.
+   * 
+   * Physics can update the logical player position independently; the camera
+   * eases toward that target to reduce visible jitter from collision
+   * corrections at low frame rates.
+   */
+  private targetPosition: THREE.Vector3;
+  private positionInitialized: boolean;
+  private readonly positionSmoothingFactor: number = 0.03; // 0-1, higher = less smoothing
 
   // Rotation limits
   private readonly minPolarAngle = 0;
@@ -43,6 +53,8 @@ export class CameraController {
     this.canJump = false;
     this.rotationSensitivity = 0.002;
     this.invertY = false;
+    this.targetPosition = new THREE.Vector3();
+    this.positionInitialized = false;
 
     this.setupCamera();
   }
@@ -55,6 +67,10 @@ export class CameraController {
     this.camera.lookAt(0, PLAYER_EYE_HEIGHT, -1);
     // Initialize euler from camera's initial rotation
     this.euler.setFromQuaternion(this.camera.quaternion);
+
+    // Initialize smoothing target to the initial camera position
+    this.targetPosition.copy(this.camera.position);
+    this.positionInitialized = true;
   }
 
   /**
@@ -110,9 +126,26 @@ export class CameraController {
 
   /**
    * Sets camera position.
+   * 
+   * When `useSmoothing` is true (typically during collisions), the camera
+   * eases toward the target to reduce visible jitter. When false, the camera
+   * snaps directly to the position (normal movement, teleports, etc.).
    */
-  setPosition(position: THREE.Vector3): void {
-    this.camera.position.copy(position);
+  setPosition(position: THREE.Vector3, useSmoothing: boolean = false): void {
+    // Update target position used for smoothing.
+    this.targetPosition.copy(position);
+
+    if (!this.positionInitialized || !useSmoothing) {
+      // First call or explicit snap: move directly to target.
+      this.camera.position.copy(this.targetPosition);
+      this.positionInitialized = true;
+      return;
+    }
+
+    // Smoothly move camera toward target to reduce jitter from collision
+    // corrections while keeping gameplay-responsive movement.
+    const alpha = this.positionSmoothingFactor;
+    this.camera.position.lerp(this.targetPosition, alpha);
   }
 
   /**

@@ -34,7 +34,19 @@ export class PerformanceMonitor {
     const deltaTime = currentTime - this.lastFrameTime;
     this.lastFrameTime = currentTime;
 
-    const frameTime = deltaTime;
+    // Guard against invalid or extremely small frame times which can happen
+    // with multiple render loops or browser timing quirks when switching tabs.
+    let frameTime = deltaTime;
+    if (!Number.isFinite(frameTime) || frameTime <= 0) {
+      frameTime = this.frameTimeHistory[this.frameTimeHistory.length - 1] ?? 16.67; // ~60 FPS fallback
+    }
+
+    // Clamp to a reasonable minimum frame time to avoid absurd FPS spikes.
+    const MIN_FRAME_TIME_MS = 1000 / 240; // Cap at ~240 FPS for display
+    if (frameTime < MIN_FRAME_TIME_MS) {
+      frameTime = MIN_FRAME_TIME_MS;
+    }
+
     const fps = 1000 / frameTime;
 
     this.frameTimeHistory.push(frameTime);

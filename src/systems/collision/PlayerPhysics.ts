@@ -21,12 +21,73 @@ export class PlayerPhysics {
   private readonly PENETRATION_THRESHOLD = 0.2; // 20% of radius
   private readonly PUSHBACK_MULTIPLIER = 2.0; // Multiplier for deep penetration pushback
   private readonly PUSHBACK_DAMPING = 0.85; // Damping factor for smooth pushback (0-1, higher = slower decay)
+  /**
+   * Global safety floor to prevent infinite free-fall when the player leaves
+   * valid level geometry (e.g., walks off the world or collision data is missing).
+   * 
+   * The camera Y position will never go below this value.
+   */
+  private readonly MIN_FALL_Y = -10;
+  /**
+   * Last known safe (grounded) camera position.
+   * 
+   * Used to restore the player if they fall out of the world or leave valid
+   * collision geometry (e.g., walking off the level).
+   */
+  private lastSafePosition: THREE.Vector3 | null = null;
+  /**
+   * Indicates that the next physics update after a teleport should snap the
+   * player directly onto the ground beneath them instead of letting them
+   * visually fall from the spawn height.
+   */
+  private needsGroundSnap: boolean = false;
+  /**
+   * Internal physics position for the player. This decouples physics from the
+   * rendered camera position so we can apply visual smoothing (camera damping)
+   * without affecting collision correctness.
+   */
+  private position: THREE.Vector3;
 
   constructor() {
     this.velocity = new THREE.Vector3();
     this.pushbackVelocity = new THREE.Vector3();
     this.isOnGround = false;
     this.collisionSystem = CollisionSystem;
+    this.position = new THREE.Vector3(0, PLAYER_EYE_HEIGHT, 0);
+  }
+
+  /**
+   * Immediately snaps an arbitrary camera position down to the nearest valid
+   * ground below it (if any) and updates internal grounded state.
+   * 
+   * This is used by `NavigationSystem.teleport` so that after a zone load,
+   * especially on mobile devices where the first physics frame may be long,
+   * the player appears directly on the floor instead of visually falling
+   * from a high spawn position.
+   */
+  snapToGroundFrom(position: THREE.Vector3): THREE.Vector3 {
+    const snapped = position.clone();
+
+    const groundCheck = this.collisionSystem.findGround(snapped, 100);
+    if (groundCheck.hit && groundCheck.point) {
+      const targetCameraY = groundCheck.point.y + PLAYER_EYE_HEIGHT;
+      snapped.y = targetCameraY;
+
+      // Update internal physics state to match the snapped, grounded position.
+      this.velocity.set(0, 0, 0);
+      this.pushbackVelocity.set(0, 0, 0);
+      this.isOnGround = true;
+      this.needsGroundSnap = false;
+      this.lastSafePosition = snapped.clone();
+      // Keep internal physics position in sync with snapped camera position.
+      this.position.copy(snapped);
+    } else {
+      // No ground found directly underneath this spawn; keep position but mark
+      // that we still need to snap once ground becomes available.
+      this.needsGroundSnap = true;
+    }
+
+    return snapped;
   }
 
   /**
@@ -37,6 +98,7 @@ export class PlayerPhysics {
   private slideCollision(
     position: THREE.Vector3,
     velocity: THREE.Vector3,
+    deltaTimeSeconds: number,
     maxRecursion: number = 3
   ): THREE.Vector3 {
     // Base case: if velocity is too small or max recursion reached, return position
@@ -56,8 +118,12 @@ export class PlayerPhysics {
     let finalPosition = destination;
     
     if (objectCollision) {
-      // Object collision detected - resolve penetration with a small, clamped push-out.
-      const pushOutVector = this.collisionSystem.resolvePenetration(playerOBB, objectCollision.obb);
+      // Object collision detected - resolve penetration with a frame-rate aware push-out.
+      const pushOutVector = this.collisionSystem.resolvePenetration(
+        playerOBB,
+        objectCollision.obb,
+        deltaTimeSeconds,
+      );
       const resolvedPosition = destination.clone().add(pushOutVector);
 
       // Calculate collision normal from the resolved position (from object to player).
@@ -163,7 +229,7 @@ export class PlayerPhysics {
     const newVelocity = projectedDestination.clone().sub(collisionPoint);
     
     // Recurse with new position and new velocity
-    return this.slideCollision(newPosition, newVelocity, maxRecursion - 1);
+    return this.slideCollision(newPosition, newVelocity, deltaTimeSeconds, maxRecursion - 1);
   }
 
   /**
@@ -174,7 +240,9 @@ export class PlayerPhysics {
     cameraController: CameraController,
     input: CameraInput
   ): THREE.Vector3 {
-    const position = cameraController.getPosition();
+    // Use internal physics position as the source of truth instead of the
+    // rendered camera position (which may be smoothed).
+    const position = this.position.clone();
     const direction = cameraController.getDirection();
     const right = cameraController.getRight();
 
@@ -186,15 +254,37 @@ export class PlayerPhysics {
     if (input.moveLeft) moveVector.sub(right);
 
     moveVector.y = 0;
-    
+
+    // Start from current position and advance in small horizontal steps so that
+    // OBB collisions remain stable even when deltaTime is large (low FPS).
+    let newPosition = position.clone();
+
     // Only normalize and apply speed if there's actual movement
     if (moveVector.lengthSq() > 0) {
       moveVector.normalize();
       moveVector.multiplyScalar(PLAYER_SPEED * deltaTime);
-    }
 
-    // Use recursive sliding collision response
-    const newPosition = this.slideCollision(position, moveVector);
+      // Maximum distance per sub-step (tuned using player radius so we don't
+      // "jump" over thin OBB objects in a single step).
+      const maxStepDistance = PLAYER_RADIUS * 0.5;
+      const totalDistance = moveVector.length();
+      let remainingDistance = totalDistance;
+
+      while (remainingDistance > 0.0001) {
+        const stepDistance = Math.min(maxStepDistance, remainingDistance);
+        const stepVelocity = moveVector.clone().setLength(stepDistance);
+
+        // Split deltaTime proportionally across sub-steps so pushback logic
+        // remains frame-rate aware.
+        const stepFraction = stepDistance / totalDistance;
+        const stepDeltaTime = deltaTime * stepFraction;
+
+        // Use recursive sliding collision response for this small step.
+        newPosition = this.slideCollision(newPosition, stepVelocity, stepDeltaTime);
+
+        remainingDistance -= stepDistance;
+      }
+    }
 
     // Apply gravity
     this.velocity.y += GRAVITY * deltaTime;
@@ -208,18 +298,35 @@ export class PlayerPhysics {
 
     // Apply vertical movement
     newPosition.y += this.velocity.y * deltaTime;
-
+    
     // Ground check
-    const groundCheck = this.collisionSystem.findGround(newPosition);
-
+    const groundCheck = this.collisionSystem.findGround(
+      newPosition,
+      this.needsGroundSnap ? 100 : 10
+    );
+    
     if (groundCheck.hit && groundCheck.point) {
       const targetCameraY = groundCheck.point.y + PLAYER_EYE_HEIGHT;
       
-      if (newPosition.y <= targetCameraY) {
+      if (this.needsGroundSnap) {
+        // After a teleport/spawn, snap directly onto the ground so the player
+        // does not visually fall from a high spawn position.
         newPosition.y = targetCameraY;
         this.velocity.y = 0;
         this.isOnGround = true;
         cameraController.setCanJump(true);
+        this.needsGroundSnap = false;
+        this.lastSafePosition = newPosition.clone();
+      } else if (newPosition.y <= targetCameraY) {
+        // Normal landing from a jump or small fall.
+        newPosition.y = targetCameraY;
+        this.velocity.y = 0;
+        this.isOnGround = true;
+        cameraController.setCanJump(true);
+        this.lastSafePosition = newPosition.clone();
+      } else {
+        // Above ground (jumping or falling).
+        this.isOnGround = false;
       }
     } else {
       this.isOnGround = false;
@@ -269,6 +376,23 @@ export class PlayerPhysics {
       }
     }
 
+    // Safety: if the player has fallen below the world, restore the last
+    // grounded position (if available) or clamp to the global fall floor.
+    if (newPosition.y < this.MIN_FALL_Y) {
+      if (this.lastSafePosition) {
+        newPosition.copy(this.lastSafePosition);
+      } else {
+        newPosition.y = this.MIN_FALL_Y;
+      }
+      this.velocity.set(0, 0, 0);
+      this.pushbackVelocity.set(0, 0, 0);
+      this.isOnGround = false;
+      cameraController.setCanJump(false);
+    }
+
+    // Persist internal physics position for the next update.
+    this.position.copy(newPosition);
+
     return newPosition;
   }
 
@@ -300,5 +424,8 @@ export class PlayerPhysics {
     this.velocity.set(0, 0, 0);
     this.pushbackVelocity.set(0, 0, 0); // Reset pushback when teleporting
     this.isOnGround = false;
+    // Teleport resets internal physics position; external systems (navigation)
+    // handle updating the rendered camera position.
+    this.position.copy(_position);
   }
 }
